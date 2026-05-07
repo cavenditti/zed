@@ -4468,7 +4468,7 @@ impl Render for Pane {
                     cx.propagate();
                 }
             }))
-            .when(self.active_item().is_some() && display_tab_bar, |pane| {
+            .when(self.active_item().is_some() && display_tab_bar && self.items.len() > 1, |pane| {
                 pane.child((self.render_tab_bar.clone())(self, window, cx))
             })
             .child({
