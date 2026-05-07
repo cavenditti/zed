@@ -4,6 +4,7 @@ pub mod terminal_panel;
 mod terminal_path_like_target;
 pub mod terminal_scrollbar;
 
+use codon_mode::{CodonModeTracker, PaneMode};
 use editor::{
     Editor, EditorSettings, actions::SelectAll, blink_manager::BlinkManager,
     ui_scrollbar_settings_from_raw,
@@ -141,6 +142,8 @@ pub struct TerminalView {
     block_below_cursor: Option<Rc<BlockProperties>>,
     scroll_top: Pixels,
     scroll_handle: TerminalScrollHandle,
+    pane_mode: PaneMode,
+    last_escape_time: Option<std::time::Instant>,
     ime_state: Option<ImeState>,
     self_handle: WeakEntity<Self>,
     rename_editor: Option<Entity<Editor>>,
@@ -285,6 +288,8 @@ impl TerminalView {
             block_below_cursor: None,
             scroll_top: Pixels::ZERO,
             scroll_handle,
+            pane_mode: PaneMode::Insert,
+            last_escape_time: None,
             needs_serialize: false,
             custom_title: None,
             ime_state: None,
@@ -1157,6 +1162,27 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Double-escape detection: enter Normal mode for scrollback navigation
+        let mods = &event.keystroke.modifiers;
+        if event.keystroke.key == "escape" && !mods.control && !mods.alt && !mods.shift && !mods.platform {
+            let now = std::time::Instant::now();
+            if let Some(last) = self.last_escape_time {
+                if now.duration_since(last) < std::time::Duration::from_millis(300) {
+                    self.enter_normal_mode(window, cx);
+                    cx.stop_propagation();
+                    self.last_escape_time = None;
+                    return;
+                }
+            }
+            self.last_escape_time = Some(now);
+        }
+
+        // In Normal mode, handle scrollback keys instead of sending to PTY
+        if self.pane_mode == PaneMode::Normal {
+            self.handle_normal_key(event, window, cx);
+            return;
+        }
+
         self.clear_bell(cx);
         self.pause_cursor_blinking(window, cx);
 
@@ -1165,11 +1191,78 @@ impl TerminalView {
         }
     }
 
+    fn handle_normal_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = event.keystroke.key.as_str();
+        let shift = event.keystroke.modifiers.shift;
+        let ctrl = event.keystroke.modifiers.control;
+        let handled = match key {
+            "j" if !shift && !ctrl => {
+                self.scroll_line_down(&ScrollLineDown, window, cx);
+                true
+            }
+            "k" if !shift && !ctrl => {
+                self.scroll_line_up(&ScrollLineUp, window, cx);
+                true
+            }
+            "u" if ctrl => {
+                self.scroll_page_up(&ScrollPageUp, window, cx);
+                true
+            }
+            "d" if ctrl => {
+                self.scroll_page_down(&ScrollPageDown, window, cx);
+                true
+            }
+            "g" if shift => {
+                self.scroll_to_bottom(&ScrollToBottom, window, cx);
+                true
+            }
+            "g" if !shift => {
+                self.scroll_to_top(&ScrollToTop, window, cx);
+                true
+            }
+            "i" | "a" => {
+                self.exit_normal_mode(window, cx);
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            cx.stop_propagation();
+        }
+    }
+
+    fn enter_normal_mode(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.pane_mode = PaneMode::Normal;
+        let tracker = cx.global_mut::<CodonModeTracker>();
+        tracker.mode = PaneMode::Normal;
+        tracker.detail = None;
+        cx.notify();
+    }
+
+    fn exit_normal_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pane_mode = PaneMode::Insert;
+        self.scroll_to_bottom(&ScrollToBottom, window, cx);
+        let tracker = cx.global_mut::<CodonModeTracker>();
+        tracker.mode = PaneMode::Insert;
+        tracker.detail = None;
+        cx.notify();
+    }
+
     fn focus_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.terminal.update(cx, |terminal, _| {
             terminal.set_cursor_shape(self.cursor_shape);
             terminal.focus_in();
         });
+
+        // Report terminal's pane mode to the global tracker
+        let tracker = cx.global_mut::<CodonModeTracker>();
+        tracker.mode = self.pane_mode;
+        tracker.detail = None;
 
         let should_blink = match TerminalSettings::get_global(cx).blinking {
             TerminalBlink::Off => false,
