@@ -15,7 +15,7 @@ mod normal;
 mod object;
 mod replace;
 mod rewrap;
-mod state;
+pub mod state;
 mod surrounds;
 mod visual;
 
@@ -513,8 +513,8 @@ impl editor::Addon for VimAddon {
 }
 
 /// The state pertaining to Vim mode.
-pub(crate) struct Vim {
-    pub(crate) mode: Mode,
+pub struct Vim {
+    pub mode: Mode,
     pub last_mode: Mode,
     pub temp_mode: bool,
     pub status_label: Option<SharedString>,
@@ -550,7 +550,7 @@ impl Render for Vim {
     }
 }
 
-enum VimEvent {
+pub enum VimEvent {
     Focused,
 }
 impl EventEmitter<VimEvent> for Vim {}
