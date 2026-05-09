@@ -161,7 +161,7 @@ impl Render for WhichKeyModal {
             })
             .unwrap_or(px(0.));
 
-        let margin_bottom = px(16.);
+        let margin_bottom = px(4.);
         let bottom_offset = margin_bottom + status_height;
 
         // Title section
@@ -191,7 +191,7 @@ impl Render for WhichKeyModal {
         let content = h_flex()
             .items_start()
             .id("which-key-content")
-            .gap(px(8.))
+            .gap(px(4.))
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle)
             .h_full()
@@ -199,7 +199,7 @@ impl Render for WhichKeyModal {
             .child(
                 // Keystrokes column
                 v_flex()
-                    .gap(px(4.))
+                    .gap(px(1.))
                     .flex_shrink_0()
                     .children(self.bindings.iter().map(|(keystrokes, _)| {
                         div()
@@ -214,7 +214,7 @@ impl Render for WhichKeyModal {
             .child(
                 // Actions column
                 v_flex()
-                    .gap(px(4.))
+                    .gap(px(1.))
                     .flex_1()
                     .min_w_0()
                     .children(self.bindings.iter().map(|(_, action_name)| {
@@ -240,11 +240,11 @@ impl Render for WhichKeyModal {
             .occlude()
             .absolute()
             .bottom(bottom_offset)
-            .right(px(16.))
-            .min_w(px(220.))
+            .right(px(8.))
+            .min_w(px(200.))
             .max_w(max_panel_width)
             .elevation_3(cx)
-            .px(px(12.))
+            .px(px(6.))
             .child(v_flex().child(title_section).when(has_rows, |el| {
                 el.child(
                     div()
