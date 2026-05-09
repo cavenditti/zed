@@ -653,27 +653,21 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
-        let center_pane = workspace.active_pane();
-        let center_pane_has_focus = center_pane.focus_handle(cx).contains_focused(window, cx);
-        let active_center_item_is_terminal = center_pane
-            .read(cx)
-            .active_item()
-            .is_some_and(|item| item.downcast::<TerminalView>().is_some());
+        // Codon: always open terminals as center pane items — every pane is equal.
+        let working_directory = default_working_directory(workspace, cx);
+        let local = action.local;
+        Self::add_center_terminal(workspace, window, cx, move |project, cx| {
+            if local {
+                project.create_local_terminal(cx)
+            } else {
+                project.create_terminal_shell(working_directory, cx)
+            }
+        })
+        .detach_and_log_err(cx);
+        return;
 
-        if center_pane_has_focus && active_center_item_is_terminal {
-            let working_directory = default_working_directory(workspace, cx);
-            let local = action.local;
-            Self::add_center_terminal(workspace, window, cx, move |project, cx| {
-                if local {
-                    project.create_local_terminal(cx)
-                } else {
-                    project.create_terminal_shell(working_directory, cx)
-                }
-            })
-            .detach_and_log_err(cx);
-            return;
-        }
-
+        // Original Zed code below kept for reference but bypassed.
+        #[allow(unreachable_code)]
         let Some(terminal_panel) = workspace.panel::<Self>(cx) else {
             return;
         };
