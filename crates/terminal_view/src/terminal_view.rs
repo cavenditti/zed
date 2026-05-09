@@ -1229,6 +1229,14 @@ impl TerminalView {
                 self.exit_normal_mode(window, cx);
                 true
             }
+            // Command mode: : opens command palette
+            ";" if shift => {
+                window.dispatch_action(
+                    Box::new(zed_actions::command_palette::Toggle),
+                    cx,
+                );
+                true
+            }
             _ => false,
         };
         if handled {
