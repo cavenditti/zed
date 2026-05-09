@@ -151,3 +151,72 @@ impl GlobalCommandPaletteInterceptor {
         Some(handler(query, workspace, cx))
     }
 }
+
+// --- Codon: Selection-aware action filtering ---
+
+/// The kind of object a selection refers to.
+/// Used by actions to declare what they accept and by the command palette
+/// to filter applicable verbs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ObjectKind {
+    /// Text range in an editor buffer
+    Text,
+    /// A file entry
+    File,
+    /// A directory entry
+    Dir,
+    /// A git diff hunk
+    Hunk,
+    /// A git commit
+    Commit,
+    /// A git branch
+    Branch,
+    /// A terminal command+output block
+    Block,
+    /// A URL
+    Url,
+    /// A diagnostic message
+    Diagnostic,
+    /// An agent conversation message
+    Message,
+}
+
+/// Registry mapping action types to the ObjectKinds they accept.
+///
+/// - Actions with no entry: accept any selection (shown always)
+/// - Actions with empty accepts: nullary verbs (shown always)
+/// - Actions with specific kinds: shown only when selection matches
+#[derive(Default)]
+pub struct ActionAcceptsRegistry {
+    accepts: collections::HashMap<TypeId, &'static [ObjectKind]>,
+}
+
+impl Global for ActionAcceptsRegistry {}
+
+impl ActionAcceptsRegistry {
+    /// Register an action type with the ObjectKinds it accepts.
+    pub fn register<A: Action>(&mut self, accepts: &'static [ObjectKind]) {
+        self.accepts.insert(TypeId::of::<A>(), accepts);
+    }
+
+    /// Check if an action is applicable for the given selection kind.
+    pub fn is_applicable(
+        &self,
+        action_type_id: TypeId,
+        selection_kind: Option<ObjectKind>,
+    ) -> bool {
+        match self.accepts.get(&action_type_id) {
+            None => true,
+            Some(accepted) => {
+                if accepted.is_empty() {
+                    true
+                } else {
+                    match selection_kind {
+                        None => true,
+                        Some(kind) => accepted.contains(&kind),
+                    }
+                }
+            }
+        }
+    }
+}

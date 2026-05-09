@@ -102,12 +102,29 @@ impl CommandPalette {
     ) -> Self {
         let filter = CommandPaletteFilter::try_global(cx);
 
+        // Codon: get selection-aware action filtering
+        let accepts_registry =
+            cx.try_global::<command_palette_hooks::ActionAcceptsRegistry>();
+        // For now, selection_kind is None (show all). Once panes wire
+        // SelectionSource into a global, this will be populated.
+        let current_selection_kind: Option<command_palette_hooks::ObjectKind> = None;
+
         let commands = window
             .available_actions(cx)
             .into_iter()
             .filter_map(|action| {
                 if filter.is_some_and(|filter| filter.is_hidden(&*action)) {
                     return None;
+                }
+
+                // Codon: filter by selection kind if registry exists
+                if let Some(registry) = accepts_registry {
+                    if !registry.is_applicable(
+                        action.type_id(),
+                        current_selection_kind,
+                    ) {
+                        return None;
+                    }
                 }
 
                 Some(Command {
