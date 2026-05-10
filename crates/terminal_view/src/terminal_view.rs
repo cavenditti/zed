@@ -1198,8 +1198,17 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         let key = event.keystroke.key.as_str();
-        let shift = event.keystroke.modifiers.shift;
-        let ctrl = event.keystroke.modifiers.control;
+        let mods = &event.keystroke.modifiers;
+        // Chord-prefix keystrokes (cmd-k, alt-x, etc.) are owned by GPUI's
+        // keymap. If one of them gets replayed here as a raw key event after a
+        // chord times out, we must not interpret it as a Normal-mode binding —
+        // otherwise e.g. `cmd-k` would silently scroll one line up *and* clear
+        // the pending chord, which the user perceives as "leaving Normal mode".
+        if mods.platform || mods.alt {
+            return;
+        }
+        let shift = mods.shift;
+        let ctrl = mods.control;
         let handled = match key {
             "j" if !shift && !ctrl => {
                 self.scroll_line_down(&ScrollLineDown, window, cx);
