@@ -6738,7 +6738,7 @@ impl Workspace {
         self.center.set_is_center(true);
         self.center.mark_positions(cx);
         self.set_active_pane(&new_pane, window, cx);
-        cx.focus_self(window);
+        window.focus(&new_pane.read(cx).focus_handle(cx), cx);
         cx.notify();
     }
 
@@ -6762,9 +6762,21 @@ impl Workspace {
 
         let mut new_panes: Vec<Entity<Pane>> = Vec::new();
         codon_collect_panes(&new_root, &mut new_panes);
-        for pane in new_panes {
+        for pane in &new_panes {
             if !self.panes.iter().any(|p| p.entity_id() == pane.entity_id()) {
-                self.panes.push(pane);
+                self.panes.push(pane.clone());
+            }
+        }
+
+        // Ensure each restored pane re-registers its items in panes_by_item so
+        // workspace-level lookups by item id resolve to the correct pane —
+        // the mapping was left intact while the panes were detached but a
+        // pane that lived through several detach/attach cycles can leave the
+        // map referencing the wrong pane otherwise.
+        for pane in &new_panes {
+            let pane_handle = pane.downgrade();
+            for item in pane.read(cx).items() {
+                self.panes_by_item.insert(item.item_id(), pane_handle.clone());
             }
         }
 
@@ -6774,7 +6786,19 @@ impl Workspace {
 
         let active = new_active.unwrap_or_else(|| self.center.first_pane());
         self.set_active_pane(&active, window, cx);
-        cx.focus_self(window);
+        // Move window focus to the active pane (set_active_pane only updates
+        // the workspace field; the focus handle has to be moved explicitly
+        // for the active item's render path to refresh its focus state).
+        window.focus(&active.read(cx).focus_handle(cx), cx);
+
+        // Force every restored pane (and its items) to re-render. Detaching
+        // a pane from `workspace.panes` doesn't invalidate the cached views
+        // GPUI keeps per entity id, so we explicitly notify them here so the
+        // first frame after restore renders fresh content.
+        for pane in &new_panes {
+            pane.update(cx, |_, cx| cx.notify());
+        }
+
         cx.notify();
     }
 
