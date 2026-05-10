@@ -75,7 +75,7 @@ fn contains_wsl_path(paths: &PathList) -> bool {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) struct SerializedAxis(pub(crate) gpui::Axis);
+pub struct SerializedAxis(pub gpui::Axis);
 impl sqlez::bindable::StaticColumnCount for SerializedAxis {}
 impl sqlez::bindable::Bind for SerializedAxis {
     fn bind(

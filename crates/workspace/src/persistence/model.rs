@@ -126,7 +126,7 @@ pub struct SerializedMultiWorkspace {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub(crate) struct SerializedWorkspace {
+pub struct SerializedWorkspace {
     pub(crate) id: WorkspaceId,
     pub(crate) location: SerializedWorkspaceLocation,
     pub(crate) paths: PathList,
@@ -224,7 +224,7 @@ impl Bind for DockData {
 }
 
 #[derive(Debug, PartialEq, Clone)]
-pub(crate) enum SerializedPaneGroup {
+pub enum SerializedPaneGroup {
     Group {
         axis: SerializedAxis,
         flexes: Option<Vec<f32>>,

@@ -1,4 +1,5 @@
 pub mod active_file_name;
+pub mod codon_bridge;
 pub mod dock;
 pub mod history_manager;
 pub mod invalid_item_view;
@@ -13,7 +14,7 @@ pub mod pane_group;
 pub mod path_list {
     pub use util::path_list::{PathList, SerializedPathList};
 }
-mod persistence;
+pub mod persistence;
 pub mod searchable;
 mod security_modal;
 pub mod shared_screen;
@@ -6644,6 +6645,52 @@ impl Workspace {
 
     pub fn session_id(&self) -> Option<String> {
         self.session_id.clone()
+    }
+
+    pub fn set_session_id(&mut self, session_id: Option<String>) {
+        self.session_id = session_id;
+    }
+
+    /// Codon-only: swap the workspace's center pane group for the layout
+    /// described by `snapshot`. Old panes are dropped after the new tree is
+    /// built. Items rehydrate via the registered `SerializableItem`s, so
+    /// open editor buffers / terminal cwds are preserved when the same item
+    /// id appears in `snapshot`.
+    pub fn replace_center_with_snapshot(
+        &mut self,
+        snapshot: crate::persistence::model::SerializedPaneGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let Some(database_id) = self.database_id() else {
+            return Task::ready(Err(anyhow!(
+                "workspace has no database id; cannot swap center group"
+            )));
+        };
+        cx.spawn_in(window, async move |workspace, cx| {
+            let project = workspace.read_with(cx, |w, _| w.project().clone())?;
+            let result = snapshot
+                .deserialize(&project, database_id, workspace.clone(), cx)
+                .await;
+            workspace.update_in(cx, |workspace, window, cx| {
+                let Some((new_root, active_pane, _items)) = result else {
+                    anyhow::bail!("failed to deserialize layout snapshot");
+                };
+                let old_root = workspace.center.root.clone();
+                workspace.remove_panes(old_root, window, cx);
+                workspace.center = PaneGroup::with_root(new_root);
+                workspace.center.set_is_center(true);
+                workspace.center.mark_positions(cx);
+                if let Some(active_pane) = active_pane {
+                    workspace.set_active_pane(&active_pane, window, cx);
+                    cx.focus_self(window);
+                } else {
+                    workspace.set_active_pane(&workspace.center.first_pane(), window, cx);
+                }
+                cx.notify();
+                Ok(())
+            })?
+        })
     }
 
     fn save_window_bounds(&self, window: &mut Window, cx: &mut App) -> Task<()> {
