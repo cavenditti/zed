@@ -1905,6 +1905,37 @@ impl AgentPanel {
             .collect()
     }
 
+    /// Codon-only: focus the panel, prepend `prefix` (if any) to the active
+    /// message editor, then add the current selection from the workspace's
+    /// active editor/terminal as thread context. Used by `codon-agent` for
+    /// cross-pane verbs like `agent::Explain`.
+    pub fn seed_explain_with_selection(
+        &mut self,
+        prefix: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.defer_in(window, move |panel, window, cx| {
+            let Some(conv) = panel.active_conversation_view().cloned() else {
+                return;
+            };
+            conv.update(cx, |conv, cx| {
+                if let Some(prefix) = prefix.as_deref()
+                    && !prefix.is_empty()
+                    && let Some(thread) = conv.active_thread().cloned()
+                {
+                    thread.update(cx, |thread, cx| {
+                        let editor = thread.active_editor(cx);
+                        editor.update(cx, |editor, cx| {
+                            editor.insert_text(prefix, window, cx);
+                        });
+                    });
+                }
+                conv.insert_selections(window, cx);
+            });
+        });
+    }
+
     pub fn active_thread_view(&self, cx: &App) -> Option<Entity<ThreadView>> {
         let server_view = self.active_conversation_view()?;
         server_view.read(cx).root_thread_view()

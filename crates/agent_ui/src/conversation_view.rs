@@ -2752,7 +2752,7 @@ impl ConversationView {
 
     /// Inserts the selected text into the message editor or the message being
     /// edited, if any.
-    pub(crate) fn insert_selections(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn insert_selections(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(active_thread) = self.active_thread() {
             active_thread.update(cx, |thread, cx| {
                 thread.active_editor(cx).update(cx, |editor, cx| {
