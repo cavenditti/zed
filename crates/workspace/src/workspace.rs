@@ -6673,8 +6673,16 @@ impl Workspace {
                 .deserialize(&project, database_id, workspace.clone(), cx)
                 .await;
             workspace.update_in(cx, |workspace, window, cx| {
-                let Some((new_root, active_pane, _items)) = result else {
-                    anyhow::bail!("failed to deserialize layout snapshot");
+                let (new_root, active_pane) = match result {
+                    Some((root, active, _items)) => (root, active),
+                    None => {
+                        // Snapshot was either empty or all of its panes failed
+                        // to rehydrate (no items survived deserialization).
+                        // Fall back to a single fresh empty pane so the
+                        // workspace stays in a usable state instead of erroring.
+                        let new_pane = workspace.add_pane(window, cx);
+                        (Member::Pane(new_pane.clone()), Some(new_pane))
+                    }
                 };
                 let old_root = workspace.center.root.clone();
                 workspace.remove_panes(old_root, window, cx);
@@ -6691,6 +6699,83 @@ impl Workspace {
                 Ok(())
             })?
         })
+    }
+
+    /// Codon-only: trigger a synchronous workspace serialization (writing
+    /// every `SerializableItem`'s state to its respective DB) and return a
+    /// task that resolves once the writes are scheduled. Awaiting the task
+    /// guarantees that subsequent calls to
+    /// [`replace_center_with_snapshot`] will find the items in their
+    /// per-kind tables — necessary for in-process layout swaps (window
+    /// switching) where the 200ms debounce hasn't fired yet.
+    pub fn serialize_workspace_now(&self, window: &mut Window, cx: &mut App) -> Task<()> {
+        self.serialize_workspace_internal(window, cx)
+    }
+
+    /// Codon-only: read access to the workspace's center pane group, used
+    /// by codon-session to capture in-memory layout snapshots.
+    pub fn center(&self) -> &PaneGroup {
+        &self.center
+    }
+
+    /// Codon-only: replace the workspace's center group with a single fresh
+    /// empty pane. Old panes are removed from `workspace.panes` but their
+    /// entities are kept alive only via any external references — the caller
+    /// is expected to have stashed them first if it wants to restore them
+    /// later (see [`restore_center_root`]).
+    pub fn replace_center_with_empty_pane(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let new_pane = self.add_pane(window, cx);
+        let mut old_pane_ids: HashSet<EntityId> = HashSet::default();
+        codon_collect_pane_ids(&self.center.root, &mut old_pane_ids);
+        old_pane_ids.remove(&new_pane.entity_id());
+        self.panes
+            .retain(|p| !old_pane_ids.contains(&p.entity_id()));
+        self.center = PaneGroup::with_root(Member::Pane(new_pane.clone()));
+        self.center.set_is_center(true);
+        self.center.mark_positions(cx);
+        self.set_active_pane(&new_pane, window, cx);
+        cx.focus_self(window);
+        cx.notify();
+    }
+
+    /// Codon-only: install a previously-captured `Member` tree as the
+    /// workspace's center group. Used by codon-session for in-process window
+    /// switching: the panes in `new_root` were originally created via
+    /// `add_pane` (so their event subscriptions on this workspace are still
+    /// live), they were just detached from `workspace.panes` when the window
+    /// became inactive. This re-attaches them without re-subscribing.
+    pub fn restore_center_root(
+        &mut self,
+        new_root: Member,
+        new_active: Option<Entity<Pane>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut old_pane_ids: HashSet<EntityId> = HashSet::default();
+        codon_collect_pane_ids(&self.center.root, &mut old_pane_ids);
+        self.panes
+            .retain(|p| !old_pane_ids.contains(&p.entity_id()));
+
+        let mut new_panes: Vec<Entity<Pane>> = Vec::new();
+        codon_collect_panes(&new_root, &mut new_panes);
+        for pane in new_panes {
+            if !self.panes.iter().any(|p| p.entity_id() == pane.entity_id()) {
+                self.panes.push(pane);
+            }
+        }
+
+        self.center = PaneGroup::with_root(new_root);
+        self.center.set_is_center(true);
+        self.center.mark_positions(cx);
+
+        let active = new_active.unwrap_or_else(|| self.center.first_pane());
+        self.set_active_pane(&active, window, cx);
+        cx.focus_self(window);
+        cx.notify();
     }
 
     fn save_window_bounds(&self, window: &mut Window, cx: &mut App) -> Task<()> {
@@ -8382,6 +8467,39 @@ struct DraggedDock(DockPosition);
 impl Render for DraggedDock {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         gpui::Empty
+    }
+}
+
+/// Walk a `Member` tree, collecting every pane's `EntityId` into `out`.
+/// Used by codon-session for in-process window switching.
+fn codon_collect_pane_ids(member: &Member, out: &mut HashSet<EntityId>) {
+    match member {
+        Member::Pane(pane) => {
+            out.insert(pane.entity_id());
+        }
+        Member::Axis(axis) => {
+            for child in &axis.members {
+                codon_collect_pane_ids(child, out);
+            }
+        }
+    }
+}
+
+/// Walk a `Member` tree, collecting every pane handle into `out` in
+/// depth-first order. Duplicates are filtered (sometimes the same pane
+/// reference appears in multiple positions while a swap is in flight).
+fn codon_collect_panes(member: &Member, out: &mut Vec<Entity<Pane>>) {
+    match member {
+        Member::Pane(pane) => {
+            if !out.iter().any(|p| p.entity_id() == pane.entity_id()) {
+                out.push(pane.clone());
+            }
+        }
+        Member::Axis(axis) => {
+            for child in &axis.members {
+                codon_collect_panes(child, out);
+            }
+        }
     }
 }
 
