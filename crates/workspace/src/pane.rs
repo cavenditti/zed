@@ -39,7 +39,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -538,6 +538,26 @@ pub enum Side {
 enum PinOperation {
     Pin,
     Unpin,
+}
+
+/// Process-wide guard for the auto-close-window branch in
+/// [`Pane::close_active_item`]. When true (default), an empty-pane
+/// `CloseActiveItem` dispatches `CloseWindow` per `WorkspaceSettings`. When
+/// false (codon at startup, via [`set_close_window_on_last_tab`]), the
+/// dispatch is skipped — accidental cmd-w on an empty pane is a no-op,
+/// not an OS-window close.
+static CLOSE_WINDOW_ON_LAST_TAB: AtomicBool = AtomicBool::new(true);
+
+/// Override the process-wide auto-close-window behaviour described on
+/// [`CLOSE_WINDOW_ON_LAST_TAB`]. Embedders that own a richer close
+/// fallback (codon's `SafeCloseActiveItem`) call this with `false` at
+/// startup.
+pub fn set_close_window_on_last_tab(enabled: bool) {
+    CLOSE_WINDOW_ON_LAST_TAB.store(enabled, Ordering::Relaxed);
+}
+
+fn close_window_on_last_tab_enabled() -> bool {
+    CLOSE_WINDOW_ON_LAST_TAB.load(Ordering::Relaxed)
 }
 
 impl Pane {
@@ -1603,10 +1623,16 @@ impl Pane {
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
         if self.items.is_empty() {
-            // Close the window when there's no active items to close, if configured
-            if WorkspaceSettings::get_global(cx)
-                .when_closing_with_no_tabs
-                .should_close()
+            // Close the window when there's no active items to close, if
+            // configured AND the process-wide "auto close window on last tab"
+            // guard hasn't been turned off. Codon disables this guard at
+            // startup so an accidental cmd-w on an empty pane never
+            // collapses the OS window — see
+            // `Pane::set_close_window_on_last_tab`.
+            if close_window_on_last_tab_enabled()
+                && WorkspaceSettings::get_global(cx)
+                    .when_closing_with_no_tabs
+                    .should_close()
             {
                 window.dispatch_action(Box::new(CloseWindow), cx);
             }
