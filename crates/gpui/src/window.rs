@@ -52,7 +52,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc, Weak,
-        atomic::{AtomicUsize, Ordering::SeqCst},
+        atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
     },
     time::Duration,
 };
@@ -68,6 +68,25 @@ pub use prompts::*;
 
 /// Default window size used when no explicit size is provided.
 pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(1095.));
+
+/// Milliseconds GPUI waits during a pending key chord (e.g. `cmd-k` waiting
+/// for a continuation) before flushing and replaying the keystrokes as raw
+/// input. Configurable so embedders (codon) can give users more time to
+/// finish a chord. Default matches the historical behaviour of one second.
+static KEYSTROKE_CHORD_TIMEOUT_MS: AtomicU64 = AtomicU64::new(1000);
+
+/// Override the keystroke-chord timeout used by GPUI when a partial chord is
+/// waiting on a continuation. Pass `Duration::from_secs(5)` for a five-second
+/// wait, etc. Affects every window in the process and takes effect for the
+/// next chord; in-flight timers continue with their previous duration.
+pub fn set_keystroke_chord_timeout(duration: Duration) {
+    let ms = duration.as_millis().min(u64::MAX as u128) as u64;
+    KEYSTROKE_CHORD_TIMEOUT_MS.store(ms.max(1), SeqCst);
+}
+
+fn keystroke_chord_timeout() -> Duration {
+    Duration::from_millis(KEYSTROKE_CHORD_TIMEOUT_MS.load(SeqCst))
+}
 
 /// A 6:5 aspect ratio minimum window size to be used for functional,
 /// additional-to-main-Zed windows, like the settings and rules library windows.
@@ -4527,8 +4546,9 @@ impl Window {
                 match_result.pending_has_binding || text_input_requires_timeout;
 
             if currently_pending.needs_timeout {
+                let timeout = keystroke_chord_timeout();
                 currently_pending.timer = Some(self.spawn(cx, async move |cx| {
-                    cx.background_executor.timer(Duration::from_secs(1)).await;
+                    cx.background_executor.timer(timeout).await;
                     cx.update(move |window, cx| {
                         let Some(currently_pending) = window
                             .pending_input
