@@ -47,6 +47,7 @@ pub use settings_store::{
     DefaultSemanticTokenRules, InvalidSettingsError, LSP_SETTINGS_SCHEMA_URL_PREFIX,
     LocalSettingsKind, LocalSettingsPath, MigrationStatus, Settings, SettingsFile,
     SettingsJsonSchemaParams, SettingsKey, SettingsLocation, SettingsParseResult, SettingsStore,
+    UserSettingsIoOverride, set_user_settings_io_override,
 };
 
 pub use vscode_import::{VsCodeSettings, VsCodeSettingsSource};

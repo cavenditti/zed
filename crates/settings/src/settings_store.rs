@@ -29,7 +29,43 @@ use util::{
     schemars::{AllowTrailingCommas, DefaultDenyUnknownFields, replace_subschema},
 };
 
+use std::sync::RwLock;
+
 use crate::editorconfig_store::EditorconfigStore;
+
+/// Codon-only override that lets an embedder substitute the on-disk
+/// representation of user settings. When set,
+/// [`SettingsStore::update_settings_file`] reads `old_text` from
+/// `read` instead of `~/.config/zed/settings.json`, and writes the
+/// post-update JSON string back through `write` instead of touching the
+/// JSON file directly. The JSON text in flight stays identical — the
+/// override is purely about where it comes from / goes to.
+///
+/// Used by codon-config to plumb the in-app settings editor through
+/// `~/.config/codon/codon.toml`'s `[settings]` sub-tree.
+pub struct UserSettingsIoOverride {
+    pub read: Arc<
+        dyn Fn(Arc<dyn Fs>) -> LocalBoxFuture<'static, Result<String>> + Send + Sync + 'static,
+    >,
+    pub write: Arc<
+        dyn Fn(Arc<dyn Fs>, String) -> LocalBoxFuture<'static, Result<()>>
+            + Send
+            + Sync
+            + 'static,
+    >,
+}
+
+static USER_SETTINGS_IO_OVERRIDE: RwLock<Option<Arc<UserSettingsIoOverride>>> = RwLock::new(None);
+
+pub fn set_user_settings_io_override(hook: Option<UserSettingsIoOverride>) {
+    if let Ok(mut guard) = USER_SETTINGS_IO_OVERRIDE.write() {
+        *guard = hook.map(Arc::new);
+    }
+}
+
+fn user_settings_io_override() -> Option<Arc<UserSettingsIoOverride>> {
+    USER_SETTINGS_IO_OVERRIDE.read().ok().and_then(|g| g.clone())
+}
 
 use crate::{
     ActiveSettingsProfileName, FontFamilyName, IconThemeName, LanguageSettingsContent,
@@ -550,34 +586,56 @@ impl SettingsStore {
         update: impl 'static + Send + FnOnce(String, AsyncApp) -> Result<String>,
     ) -> oneshot::Receiver<Result<()>> {
         let (tx, rx) = oneshot::channel::<Result<()>>();
+        let override_hook = user_settings_io_override();
         self.setting_file_updates_tx
             .unbounded_send(Box::new(move |cx: AsyncApp| {
                 async move {
                     let res = async move {
-                        let old_text = Self::load_settings(&fs).await?;
+                        let old_text = match override_hook.as_ref() {
+                            Some(hook) => (hook.read)(fs.clone()).await?,
+                            None => Self::load_settings(&fs).await?,
+                        };
                         let new_text = update(old_text, cx.clone())?;
 
-                        let settings_path = paths::settings_file().as_path();
-                        if fs.is_file(settings_path).await {
-                            let resolved_path =
-                                fs.canonicalize(settings_path).await.with_context(|| {
-                                    format!(
-                                        "Failed to canonicalize settings path {:?}",
-                                        settings_path
-                                    )
-                                })?;
+                        match override_hook.as_ref() {
+                            Some(hook) => {
+                                (hook.write)(fs.clone(), new_text.clone()).await?;
+                            }
+                            None => {
+                                let settings_path = paths::settings_file().as_path();
+                                if fs.is_file(settings_path).await {
+                                    let resolved_path = fs
+                                        .canonicalize(settings_path)
+                                        .await
+                                        .with_context(|| {
+                                            format!(
+                                                "Failed to canonicalize settings path {:?}",
+                                                settings_path
+                                            )
+                                        })?;
 
-                            fs.atomic_write(resolved_path.clone(), new_text.clone())
-                                .await
-                                .with_context(|| {
-                                    format!("Failed to write settings to file {:?}", resolved_path)
-                                })?;
-                        } else {
-                            fs.atomic_write(settings_path.to_path_buf(), new_text.clone())
-                                .await
-                                .with_context(|| {
-                                    format!("Failed to write settings to file {:?}", settings_path)
-                                })?;
+                                    fs.atomic_write(resolved_path.clone(), new_text.clone())
+                                        .await
+                                        .with_context(|| {
+                                            format!(
+                                                "Failed to write settings to file {:?}",
+                                                resolved_path
+                                            )
+                                        })?;
+                                } else {
+                                    fs.atomic_write(
+                                        settings_path.to_path_buf(),
+                                        new_text.clone(),
+                                    )
+                                    .await
+                                    .with_context(|| {
+                                        format!(
+                                            "Failed to write settings to file {:?}",
+                                            settings_path
+                                        )
+                                    })?;
+                                }
+                            }
                         }
 
                         cx.update_global(|store: &mut SettingsStore, cx| {
