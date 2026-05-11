@@ -715,6 +715,17 @@ actions!(
     ]
 );
 
+pub mod file_manager {
+    use gpui::actions;
+    actions!(
+        file_manager,
+        [
+            /// Opens the Codon file manager in the active pane.
+            OpenFileManager
+        ]
+    );
+}
+
 pub mod debug_panel {
     use gpui::actions;
     actions!(

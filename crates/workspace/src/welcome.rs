@@ -1,6 +1,6 @@
 use crate::{
-    NewFile, Open, OpenMode, PathList, SerializedWorkspaceLocation, ToggleWorkspaceSidebar,
-    Workspace, WorkspaceId,
+    NewFile, NewTerminal, Open, OpenMode, PathList, SerializedWorkspaceLocation,
+    ToggleWorkspaceSidebar, Workspace, WorkspaceId,
     item::{Item, ItemEvent},
     persistence::WorkspaceDb,
 };
@@ -21,7 +21,10 @@ use ui::{ButtonLike, Divider, DividerColor, KeyBinding, Vector, VectorName, prel
 use util::ResultExt;
 use zed_actions::{
     Extensions, OpenKeymap, OpenOnboarding, OpenSettings, assistant::ToggleFocus, command_palette,
+    file_manager::OpenFileManager,
 };
+
+static NEW_TERMINAL: NewTerminal = NewTerminal { local: false };
 
 #[derive(PartialEq, Clone, Debug, Deserialize, Serialize, JsonSchema, Action)]
 #[action(namespace = welcome)]
@@ -161,7 +164,7 @@ impl SectionEntry {
     }
 }
 
-const CONTENT: (Section<4>, Section<3>) = (
+const CONTENT: (Section<6>, Section<3>) = (
     Section {
         title: "Get Started",
         entries: [
@@ -175,6 +178,18 @@ const CONTENT: (Section<4>, Section<3>) = (
                 icon: IconName::FolderOpen,
                 title: "Open Project",
                 action: &Open::DEFAULT,
+                visibility_guard: SectionVisibility::Always,
+            },
+            SectionEntry {
+                icon: IconName::Terminal,
+                title: "New Terminal",
+                action: &NEW_TERMINAL,
+                visibility_guard: SectionVisibility::Always,
+            },
+            SectionEntry {
+                icon: IconName::FileTree,
+                title: "Open File Manager",
+                action: &OpenFileManager,
                 visibility_guard: SectionVisibility::Always,
             },
             SectionEntry {
@@ -382,6 +397,45 @@ impl WelcomePage {
             )
     }
 
+    fn render_shortcuts_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let row = |chord: SharedString, label: &'static str| {
+            h_flex()
+                .w_full()
+                .justify_between()
+                .py_0p5()
+                .child(
+                    Label::new(label)
+                        .size(LabelSize::Small)
+                        .color(Color::Default),
+                )
+                .child(
+                    Label::new(chord)
+                        .size(LabelSize::Small)
+                        .color(Color::Muted)
+                        .buffer_font(cx),
+                )
+        };
+
+        v_flex()
+            .w_full()
+            .child(SectionHeader::new("Shortcuts"))
+            .child(row(SharedString::from("⌘ K  F1"), "Keyboard cheatsheet"))
+            .child(row(SharedString::from("⌘ K  F2"), "Open this welcome page"))
+            .child(row(SharedString::from("⌘ K  a a"), "Focus agent"))
+            .child(row(
+                SharedString::from("⌃ H · ⌃ J · ⌃ K · ⌃ L"),
+                "Move pane focus",
+            ))
+            .child(row(
+                SharedString::from("⌘ K  |  /  ⌘ K  -"),
+                "Split pane right / down",
+            ))
+            .child(row(
+                SharedString::from("⌘ K  ⇧ W  n"),
+                "New session window",
+            ))
+    }
+
     fn render_recent_project_section(
         &self,
         recent_projects: Vec<impl IntoElement>,
@@ -450,9 +504,9 @@ impl Render for WelcomePage {
         };
 
         let welcome_label = if self.fallback_to_recent_projects {
-            "Welcome back to Zed"
+            "Welcome back to Codon"
         } else {
-            "Welcome to Zed"
+            "Welcome to Codon"
         };
 
         h_flex()
@@ -479,10 +533,10 @@ impl Render for WelcomePage {
                             .justify_center()
                             .mb_4()
                             .gap_4()
-                            .child(Vector::square(VectorName::ZedLogo, rems_from_px(45.)))
+                            .child(Vector::square(VectorName::CodonLogo, rems_from_px(45.)))
                             .child(
                                 v_flex().child(Headline::new(welcome_label)).child(
-                                    Label::new("The editor for what's next")
+                                    Label::new("A nucleus for agentic development")
                                         .size(LabelSize::Small)
                                         .color(Color::Muted)
                                         .italic(),
@@ -496,6 +550,7 @@ impl Render for WelcomePage {
                         next_tab_index += 1;
                         this.child(self.render_agent_card(agent_tab_index, cx))
                     })
+                    .child(self.render_shortcuts_footer(cx))
                     .when(!self.fallback_to_recent_projects, |this| {
                         this.child(
                             v_flex().gap_4().child(Divider::horizontal()).child(
