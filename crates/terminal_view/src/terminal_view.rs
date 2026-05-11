@@ -348,6 +348,9 @@ impl TerminalView {
 
     /// Sets the marked (pre-edit) text from the IME.
     pub(crate) fn set_marked_text(&mut self, text: String, cx: &mut Context<Self>) {
+        if self.pane_mode == PaneMode::Normal {
+            return;
+        }
         if text.is_empty() {
             return self.clear_marked_text(cx);
         }
@@ -372,6 +375,13 @@ impl TerminalView {
 
     /// Commits (sends) the given text to the PTY. Called by InputHandler::replace_text_in_range.
     pub(crate) fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        // In codon's Normal mode the terminal is a read-only scrollback
+        // viewer — IME / typed-text would otherwise sneak past `key_down`
+        // (which only sees keys that don't reach the input handler) and
+        // reach the PTY anyway. Drop it.
+        if self.pane_mode == PaneMode::Normal {
+            return;
+        }
         if !text.is_empty() {
             self.terminal.update(cx, |term, _| {
                 term.input(text.to_string().into_bytes());
@@ -859,8 +869,19 @@ impl TerminalView {
         });
     }
 
-    fn send_keystroke(&mut self, text: &SendKeystroke, _: &mut Window, cx: &mut Context<Self>) {
+    fn send_keystroke(&mut self, text: &SendKeystroke, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(keystroke) = Keystroke::parse(&text.0).log_err() {
+            // Default keymap routes raw Esc through `terminal::SendKeystroke`
+            // (vendor/zed/assets/keymaps/default-macos.json), and action
+            // dispatch stops propagation before `on_key_down` fires
+            // (gpui/window.rs sets `propagate_event = false` in the bubble
+            // phase). So the double-Esc chord (Insert ⇄ Normal) has to be
+            // checked here too, not just in `key_down`. A single Esc still
+            // falls through — to the PTY in Insert mode, to vi_motion's
+            // clear-selection in Normal mode.
+            if self.handle_double_escape(&keystroke, window, cx) {
+                return;
+            }
             self.clear_bell(cx);
             self.blink_manager.update(cx, BlinkManager::pause_blinking);
             self.process_keystroke(&keystroke, cx);
@@ -1162,24 +1183,15 @@ impl TerminalView {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // Double-escape detection: enter Normal mode for scrollback navigation
-        let mods = &event.keystroke.modifiers;
-        if event.keystroke.key == "escape" && !mods.control && !mods.alt && !mods.shift && !mods.platform {
-            let now = std::time::Instant::now();
-            if let Some(last) = self.last_escape_time {
-                if now.duration_since(last) < std::time::Duration::from_millis(300) {
-                    self.enter_normal_mode(window, cx);
-                    cx.stop_propagation();
-                    self.last_escape_time = None;
-                    return;
-                }
-            }
-            self.last_escape_time = Some(now);
-        }
-
-        // In Normal mode, handle scrollback keys instead of sending to PTY
+        // In Normal mode every key is routed through vi_motion / codon
+        // handlers; the double-Esc chord only makes sense in Insert mode.
         if self.pane_mode == PaneMode::Normal {
             self.handle_normal_key(event, window, cx);
+            return;
+        }
+
+        if self.handle_double_escape(&event.keystroke, window, cx) {
+            cx.stop_propagation();
             return;
         }
 
@@ -1191,6 +1203,35 @@ impl TerminalView {
         }
     }
 
+    /// Two unmodified `escape` keystrokes within 300 ms toggle the codon
+    /// pane mode (Insert ⇄ Normal). Returns `true` when the keystroke
+    /// completed the chord and was consumed — caller should not forward it.
+    fn handle_double_escape(
+        &mut self,
+        keystroke: &Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mods = &keystroke.modifiers;
+        if keystroke.key != "escape" || mods.control || mods.alt || mods.shift || mods.platform {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_escape_time
+            && now.duration_since(last) < std::time::Duration::from_millis(300)
+        {
+            match self.pane_mode {
+                PaneMode::Insert => self.enter_normal_mode(window, cx),
+                PaneMode::Normal => self.exit_normal_mode(window, cx),
+                PaneMode::Command => {}
+            }
+            self.last_escape_time = None;
+            return true;
+        }
+        self.last_escape_time = Some(now);
+        false
+    }
+
     fn handle_normal_key(
         &mut self,
         event: &KeyDownEvent,
@@ -1199,62 +1240,60 @@ impl TerminalView {
     ) {
         let key = event.keystroke.key.as_str();
         let mods = &event.keystroke.modifiers;
-        // Chord-prefix keystrokes (cmd-k, alt-x, etc.) are owned by GPUI's
-        // keymap. If one of them gets replayed here as a raw key event after a
-        // chord times out, we must not interpret it as a Normal-mode binding —
-        // otherwise e.g. `cmd-k` would silently scroll one line up *and* clear
-        // the pending chord, which the user perceives as "leaving Normal mode".
+
+        // Chord-prefix keystrokes (cmd-k, alt-x) are owned by GPUI's keymap.
+        // If one gets replayed here as a raw key after a chord times out, we
+        // must not interpret it as a Normal-mode binding — otherwise e.g.
+        // `cmd-k` would scroll one line up *and* clear the pending chord.
         if mods.platform || mods.alt {
             return;
         }
-        let shift = mods.shift;
-        let ctrl = mods.control;
-        let handled = match key {
-            "j" if !shift && !ctrl => {
-                self.scroll_line_down(&ScrollLineDown, window, cx);
-                true
-            }
-            "k" if !shift && !ctrl => {
-                self.scroll_line_up(&ScrollLineUp, window, cx);
-                true
-            }
-            "u" if ctrl => {
-                self.scroll_page_up(&ScrollPageUp, window, cx);
-                true
-            }
-            "d" if ctrl => {
-                self.scroll_page_down(&ScrollPageDown, window, cx);
-                true
-            }
-            "g" if shift => {
-                self.scroll_to_bottom(&ScrollToBottom, window, cx);
-                true
-            }
-            "g" if !shift => {
-                self.scroll_to_top(&ScrollToTop, window, cx);
-                true
-            }
-            "i" | "a" => {
-                self.exit_normal_mode(window, cx);
-                true
-            }
-            // Command mode: : opens command palette
-            ";" if shift => {
-                window.dispatch_action(
-                    Box::new(zed_actions::command_palette::Toggle),
-                    cx,
-                );
-                true
-            }
-            _ => false,
-        };
-        if handled {
+
+        // Codon-owned: `:` opens the command palette (Helix-style).
+        if key == ";" && mods.shift {
+            window.dispatch_action(Box::new(zed_actions::command_palette::Toggle), cx);
             cx.stop_propagation();
+            return;
         }
+
+        // Codon-owned: `i` / `a` leave Normal mode. Intercepted here so
+        // pane_mode and vi_mode stay in sync — alacritty's own `i` handler
+        // would only toggle vi_mode and leave our pane_mode stale.
+        if !mods.shift && !mods.control && (key == "i" || key == "a") {
+            self.exit_normal_mode(window, cx);
+            cx.stop_propagation();
+            return;
+        }
+
+        // Double-Esc also returns to Insert mode (mirror of the Insert→Normal
+        // chord). Runs before vi_motion so the second Esc doesn't get
+        // consumed as clear-selection.
+        if self.handle_double_escape(&event.keystroke, window, cx) {
+            cx.stop_propagation();
+            return;
+        }
+
+        // Everything else (h/j/k/l, w/b/e, $/0/^, g/G, ctrl-u/ctrl-d/ctrl-b/
+        // ctrl-f, v selection, y yank, escape clear-selection) goes through
+        // alacritty's vi mode via `try_keystroke`.
+        self.process_keystroke(&event.keystroke, cx);
+        // In Normal mode the terminal is a read-only viewer — consume every
+        // keystroke so unbound keys can't fall through to text input.
+        cx.stop_propagation();
     }
 
     fn enter_normal_mode(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.pane_mode = PaneMode::Normal;
+        // Piggy-back on alacritty's vi mode: it owns the cursor position,
+        // h/j/k/l motions, word motions, `v` selection, `y` yank-to-clipboard,
+        // and `escape` clear-selection. We keep our own pane-mode state for
+        // codon-level concerns (status bar, key context) but defer to
+        // `try_keystroke` for the actual editing primitives.
+        self.terminal.update(cx, |term, _| {
+            if !term.vi_mode_enabled() {
+                term.toggle_vi_mode();
+            }
+        });
         let tracker = cx.global_mut::<CodonModeTracker>();
         tracker.mode = PaneMode::Normal;
         tracker.detail = None;
@@ -1263,6 +1302,11 @@ impl TerminalView {
 
     fn exit_normal_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pane_mode = PaneMode::Insert;
+        self.terminal.update(cx, |term, _| {
+            if term.vi_mode_enabled() {
+                term.toggle_vi_mode();
+            }
+        });
         self.scroll_to_bottom(&ScrollToBottom, window, cx);
         let tracker = cx.global_mut::<CodonModeTracker>();
         tracker.mode = PaneMode::Insert;
