@@ -13,6 +13,7 @@ use agent_settings::AgentSettings;
 use alacritty_terminal::vte::ansi;
 use anyhow::Context as _;
 use askpass::AskPassDelegate;
+use codon_mode::{CodonModeTracker, PaneMode};
 use collections::{BTreeMap, HashMap, HashSet};
 use db::kvp::KeyValueStore;
 use editor::{
@@ -776,6 +777,20 @@ impl GitPanel {
                 editor.clear(window, cx);
             });
 
+            // Codon integration: when focus moves into the commit-message
+            // editor, flip the global mode tracker to Insert so the
+            // status-bar pill reflects "writing message". The mirror
+            // (focus leaving back to the changes list) is handled by
+            // `focus_in` above.
+            let commit_editor_focus =
+                commit_editor.read(cx).focus_handle(cx);
+            cx.on_focus(&commit_editor_focus, window, |_this, _window, cx| {
+                let tracker = cx.global_mut::<CodonModeTracker>();
+                tracker.mode = PaneMode::Insert;
+                tracker.detail = None;
+            })
+            .detach();
+
             let scroll_handle = UniformListScrollHandle::new();
 
             let mut was_ai_enabled = AgentSettings::get_global(cx).enabled(cx);
@@ -990,9 +1005,17 @@ impl GitPanel {
 
         if self.commit_editor.read(cx).is_focused(window) {
             dispatch_context.add("CommitEditor");
+            // Codon: commit-message editor focused = Insert pane mode.
+            // codon-keymap's `[bindings.git_panel.insert]` is bound under
+            // the predicate `GitPanel && pane_mode == insert`.
+            dispatch_context.set("pane_mode", "insert");
         } else if self.focus_handle.contains_focused(window, cx) {
             dispatch_context.add("menu");
             dispatch_context.add("ChangesList");
+            // Codon: changes list focused = Normal pane mode. `j`/`k`/
+            // `s`/`u`/`:` from `[bindings.git_panel.normal]` ride this
+            // predicate.
+            dispatch_context.set("pane_mode", "normal");
         }
 
         dispatch_context
@@ -1006,6 +1029,21 @@ impl GitPanel {
         if !self.focus_handle.contains_focused(window, cx) {
             cx.emit(Event::Focus);
         }
+        // Codon integration: focusing the panel's own focus_handle means
+        // the changes list is active — flip the global mode tracker to
+        // Normal so the status-bar mode pill follows. The commit-editor
+        // path sets Insert via the focus listener registered in the
+        // constructor.
+        let commit_editor_focused =
+            self.commit_editor.read(cx).is_focused(window);
+        let mode = if commit_editor_focused {
+            PaneMode::Insert
+        } else {
+            PaneMode::Normal
+        };
+        let tracker = cx.global_mut::<CodonModeTracker>();
+        tracker.mode = mode;
+        tracker.detail = None;
     }
 
     fn scroll_to_selected_entry(&mut self, cx: &mut Context<Self>) {
