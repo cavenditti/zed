@@ -1416,50 +1416,73 @@ impl MessageEditor {
             return;
         }
 
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+
+        let start = workspace
+            .read(cx)
+            .project()
+            .read(cx)
+            .worktrees(cx)
+            .next()
+            .map(|wt| wt.read(cx).abs_path().to_path_buf())
+            .unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"))
+            });
+
         let editor = self.editor.clone();
         let mention_set = self.mention_set.clone();
-        let workspace = self.workspace.clone();
+        let workspace_weak = self.workspace.clone();
+        workspace.update(cx, |workspace, cx| {
+            let weak = workspace.weak_handle();
+            workspace.toggle_modal(window, cx, move |window, cx| {
+                let editor = editor.clone();
+                let mention_set = mention_set.clone();
+                let workspace_weak = workspace_weak.clone();
+                codon_pickers::DirPickerModal::new_multi(
+                    start,
+                    move |paths, window, cx| {
+                        if paths.is_empty() {
+                            return;
+                        }
+                        let editor = editor.clone();
+                        let mention_set = mention_set.clone();
+                        let workspace_weak = workspace_weak.clone();
+                        window
+                            .spawn(cx, async move |cx| {
+                                let default_image_name: SharedString = "Image".into();
+                                let images = cx
+                                    .background_spawn(async move {
+                                        paths
+                                            .into_iter()
+                                            .filter_map(|path| {
+                                                crate::mention_set::load_external_image_from_path(
+                                                    &path,
+                                                    &default_image_name,
+                                                )
+                                            })
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .await;
 
-        let paths_receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: Some("Select Images".into()),
-        });
-
-        window
-            .spawn(cx, async move |cx| {
-                let paths = match paths_receiver.await {
-                    Ok(Ok(Some(paths))) => paths,
-                    _ => return Ok::<(), anyhow::Error>(()),
-                };
-
-                let default_image_name: SharedString = "Image".into();
-                let images = cx
-                    .background_spawn(async move {
-                        paths
-                            .into_iter()
-                            .filter_map(|path| {
-                                crate::mention_set::load_external_image_from_path(
-                                    &path,
-                                    &default_image_name,
+                                crate::mention_set::insert_images_as_context(
+                                    images,
+                                    editor,
+                                    mention_set,
+                                    workspace_weak,
+                                    cx,
                                 )
+                                .await;
                             })
-                            .collect::<Vec<_>>()
-                    })
-                    .await;
-
-                crate::mention_set::insert_images_as_context(
-                    images,
-                    editor,
-                    mention_set,
-                    workspace,
+                            .detach();
+                    },
+                    weak,
+                    window,
                     cx,
                 )
-                .await;
-                Ok(())
-            })
-            .detach_and_log_err(cx);
+            });
+        });
     }
 
     pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {

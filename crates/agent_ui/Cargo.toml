@@ -42,6 +42,7 @@ buffer_diff.workspace = true
 chrono.workspace = true
 client.workspace = true
 cloud_api_types.workspace = true
+codon-pickers.workspace = true
 collections.workspace = true
 command_palette_hooks.workspace = true
 component.workspace = true

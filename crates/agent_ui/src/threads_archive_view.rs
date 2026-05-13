@@ -13,6 +13,7 @@ use agent::ThreadStore;
 use agent_client_protocol::schema as acp;
 use agent_settings::AgentSettings;
 use chrono::{DateTime, Datelike as _, Local, NaiveDate, TimeDelta, Utc};
+use codon_pickers::DirPickerModal;
 use collections::HashMap;
 use editor::Editor;
 use fs::Fs;
@@ -468,6 +469,7 @@ impl ThreadsArchiveView {
             })
             .unwrap_or_default();
 
+        let workspace_weak = self.workspace.clone();
         workspace.update(cx, |workspace, cx| {
             workspace.toggle_modal(window, cx, |window, cx| {
                 ProjectPickerModal::new(
@@ -476,6 +478,7 @@ impl ThreadsArchiveView {
                     archive_view,
                     current_workspace_id,
                     sibling_workspace_ids,
+                    workspace_weak,
                     window,
                     cx,
                 )
@@ -1090,6 +1093,7 @@ impl ProjectPickerModal {
         archive_view: WeakEntity<ThreadsArchiveView>,
         current_workspace_id: Option<WorkspaceId>,
         sibling_workspace_ids: HashSet<WorkspaceId>,
+        workspace: WeakEntity<Workspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -1101,6 +1105,7 @@ impl ProjectPickerModal {
             selected_index: 0,
             current_workspace_id,
             sibling_workspace_ids,
+            workspace,
             focus_handle: cx.focus_handle(),
         };
 
@@ -1190,6 +1195,7 @@ struct ProjectPickerDelegate {
     )>,
     filtered_entries: Vec<ProjectPickerEntry>,
     selected_index: usize,
+    workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
 }
 
@@ -1234,30 +1240,54 @@ impl ProjectPickerDelegate {
     }
 
     fn open_local_folder(&mut self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
-        let paths_receiver = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: None,
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let thread_id = self.thread.thread_id;
+        let archive_view = self.archive_view.clone();
+        let thread = self.thread.clone();
+        let workspace_weak = self.workspace.clone();
+
+        cx.emit(DismissEvent);
+
+        let start = workspace
+            .read(cx)
+            .project()
+            .read(cx)
+            .worktrees(cx)
+            .next()
+            .map(|wt| wt.read(cx).abs_path().to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+
+        workspace.update(cx, |workspace, cx| {
+            workspace.toggle_modal(window, cx, move |window, cx| {
+                DirPickerModal::new(
+                    start,
+                    move |path, window, cx| {
+                        let work_dirs = PathList::new(&[path]);
+                        let worktree_paths =
+                            super::thread_metadata_store::WorktreePaths::from_folder_paths(
+                                &work_dirs,
+                            );
+                        ThreadMetadataStore::global(cx).update(cx, |store, cx| {
+                            store.update_working_directories(thread_id, work_dirs, cx);
+                        });
+                        let mut thread = thread.clone();
+                        thread.worktree_paths = worktree_paths;
+                        archive_view
+                            .update(cx, |view, cx| {
+                                view.selection = None;
+                                view.reset_filter_editor_text(window, cx);
+                                cx.emit(ThreadsArchiveViewEvent::Activate { thread });
+                            })
+                            .log_err();
+                    },
+                    workspace_weak,
+                    window,
+                    cx,
+                )
+            });
         });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = paths_receiver.await else {
-                return;
-            };
-            if paths.is_empty() {
-                return;
-            }
-
-            let work_dirs = PathList::new(&paths);
-
-            this.update_in(cx, |this, window, cx| {
-                this.delegate
-                    .update_working_directories_and_unarchive(work_dirs, window, cx);
-                cx.emit(DismissEvent);
-            })
-            .log_err();
-        })
-        .detach();
     }
 }
 

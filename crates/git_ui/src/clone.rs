@@ -1,5 +1,7 @@
+use codon_pickers::DirPickerModal;
 use gpui::{App, Context, WeakEntity, Window};
 use notifications::status_toast::StatusToast;
+use std::path::PathBuf;
 use std::sync::Arc;
 use ui::{Color, Icon, IconName, IconSize, SharedString};
 use util::ResultExt;
@@ -14,17 +16,58 @@ pub fn clone_and_open(
         dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send + Sync + 'static,
     >,
 ) {
-    let destination_prompt = cx.prompt_for_paths(gpui::PathPromptOptions {
-        files: false,
-        directories: true,
-        multiple: false,
-        prompt: Some("Select as Repository Destination".into()),
-    });
+    let start_dir = workspace
+        .read_with(cx, |workspace, cx| {
+            workspace
+                .project()
+                .read(cx)
+                .worktrees(cx)
+                .next()
+                .map(|wt| wt.read(cx).abs_path().to_path_buf())
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
 
+    let workspace_for_modal = workspace.clone();
+    let workspace_for_pick = workspace.clone();
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.toggle_modal(window, cx, |window, cx| {
+                DirPickerModal::new(
+                    start_dir,
+                    move |destination_dir, window, cx| {
+                        run_clone(
+                            repo_url.clone(),
+                            destination_dir,
+                            workspace_for_pick.clone(),
+                            on_success.clone(),
+                            window,
+                            cx,
+                        );
+                    },
+                    workspace_for_modal.clone(),
+                    window,
+                    cx,
+                )
+            });
+        })
+        .log_err();
+}
+
+fn run_clone(
+    repo_url: SharedString,
+    destination_dir: PathBuf,
+    workspace: WeakEntity<Workspace>,
+    on_success: Arc<
+        dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + Send + Sync + 'static,
+    >,
+    window: &mut Window,
+    cx: &mut App,
+) {
     window
         .spawn(cx, async move |cx| {
-            let mut paths = destination_prompt.await.ok()?.ok()??;
-            let mut destination_dir = paths.pop()?;
+            let mut destination_dir = destination_dir;
 
             let repo_name = repo_url
                 .split('/')

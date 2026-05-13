@@ -24,7 +24,7 @@ use gpui::{
     ClipboardItem, Context, CursorStyle, DismissEvent, Div, DragMoveEvent, Entity, EventEmitter,
     ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, KeyContext,
     ListHorizontalSizingBehavior, ListSizingBehavior, Modifiers, ModifiersChangedEvent,
-    MouseButton, MouseDownEvent, ParentElement, PathPromptOptions, Pixels, Point, PromptLevel,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, PromptLevel,
     Render, ScrollStrategy, Stateful, Styled, Subscription, Task, UniformListScrollHandle,
     WeakEntity, Window, actions, anchored, deferred, div, hsla, linear_color_stop, linear_gradient,
     point, px, size, transparent_white, uniform_list,
@@ -3297,89 +3297,131 @@ impl ProjectPanel {
 
         let total_files = files_to_download.len();
         let workspace = self.workspace.clone();
-
-        let destination_dir = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Download".into()),
-        });
-
         let fs = self.fs.clone();
+        let this = cx.weak_entity();
+
+        // Pick a sensible starting directory for the picker: the first
+        // worktree's absolute path, falling back to the process cwd.
+        let start_dir = project
+            .worktrees(cx)
+            .next()
+            .map(|wt| wt.read(cx).abs_path().to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+
         let notification_id =
             workspace::notifications::NotificationId::Named("download-progress".into());
-        cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(mut paths))) = destination_dir.await {
-                if let Some(dest_dir) = paths.pop() {
-                    // Show initial toast
-                    workspace
-                        .update(cx, |workspace, cx| {
-                            workspace.show_toast(
-                                workspace::Toast::new(
-                                    notification_id.clone(),
-                                    format!("Downloading 0/{} files...", total_files),
-                                ),
-                                cx,
-                            );
-                        })
-                        .ok();
 
-                    for (index, (worktree_id, entry_path, relative_path)) in
-                        files_to_download.into_iter().enumerate()
-                    {
-                        // Update progress toast
-                        workspace
-                            .update(cx, |workspace, cx| {
-                                workspace.show_toast(
-                                    workspace::Toast::new(
-                                        notification_id.clone(),
-                                        format!(
-                                            "Downloading {}/{} files...",
-                                            index + 1,
-                                            total_files
-                                        ),
-                                    ),
-                                    cx,
-                                );
+        // Replace the OS-native dialog with codon's DirPickerModal, then
+        // route the chosen path into the same download flow.
+        let Some(workspace_entity) = workspace.upgrade() else {
+            return;
+        };
+        let files_to_download = std::sync::Arc::new(std::sync::Mutex::new(Some(files_to_download)));
+        let workspace_for_modal = workspace.clone();
+        workspace_entity.update(cx, |workspace_view, cx| {
+            workspace_view.toggle_modal(window, cx, move |window, cx| {
+                let workspace_for_callback = workspace_for_modal.clone();
+                let this = this.clone();
+                let fs = fs.clone();
+                let notification_id = notification_id.clone();
+                let files_to_download = files_to_download.clone();
+                codon_pickers::DirPickerModal::new(
+                    start_dir,
+                    move |dest_dir, window, cx| {
+                        let Some(files_to_download) = files_to_download
+                            .lock()
+                            .ok()
+                            .and_then(|mut guard| guard.take())
+                        else {
+                            return;
+                        };
+                        let workspace = workspace_for_callback.clone();
+                        let this = this.clone();
+                        let fs = fs.clone();
+                        let notification_id = notification_id.clone();
+                        window
+                            .spawn(cx, async move |cx| {
+                                workspace
+                                    .update(cx, |workspace, cx| {
+                                        workspace.show_toast(
+                                            workspace::Toast::new(
+                                                notification_id.clone(),
+                                                format!(
+                                                    "Downloading 0/{} files...",
+                                                    total_files
+                                                ),
+                                            ),
+                                            cx,
+                                        );
+                                    })
+                                    .ok();
+
+                                for (index, (worktree_id, entry_path, relative_path)) in
+                                    files_to_download.into_iter().enumerate()
+                                {
+                                    workspace
+                                        .update(cx, |workspace, cx| {
+                                            workspace.show_toast(
+                                                workspace::Toast::new(
+                                                    notification_id.clone(),
+                                                    format!(
+                                                        "Downloading {}/{} files...",
+                                                        index + 1,
+                                                        total_files
+                                                    ),
+                                                ),
+                                                cx,
+                                            );
+                                        })
+                                        .ok();
+
+                                    let destination_path = dest_dir.join(&relative_path);
+
+                                    if let Some(parent) = destination_path.parent()
+                                        && !parent.exists()
+                                    {
+                                        fs.create_dir(parent).await.log_err();
+                                    }
+
+                                    let download_task = this.update(cx, |this, cx| {
+                                        let project = this.project.clone();
+                                        project.update(cx, |project, cx| {
+                                            project.download_file(
+                                                worktree_id,
+                                                entry_path,
+                                                destination_path,
+                                                cx,
+                                            )
+                                        })
+                                    });
+                                    if let Ok(task) = download_task {
+                                        task.await.log_err();
+                                    }
+                                }
+
+                                workspace
+                                    .update(cx, |workspace, cx| {
+                                        workspace.show_toast(
+                                            workspace::Toast::new(
+                                                notification_id.clone(),
+                                                format!(
+                                                    "Downloaded {} files",
+                                                    total_files
+                                                ),
+                                            ),
+                                            cx,
+                                        );
+                                    })
+                                    .ok();
                             })
-                            .ok();
-
-                        let destination_path = dest_dir.join(&relative_path);
-
-                        // Create parent directories if needed
-                        if let Some(parent) = destination_path.parent() {
-                            if !parent.exists() {
-                                fs.create_dir(parent).await.log_err();
-                            }
-                        }
-
-                        let download_task = this.update(cx, |this, cx| {
-                            let project = this.project.clone();
-                            project.update(cx, |project, cx| {
-                                project.download_file(worktree_id, entry_path, destination_path, cx)
-                            })
-                        });
-                        if let Ok(task) = download_task {
-                            task.await.log_err();
-                        }
-                    }
-
-                    // Show completion toast
-                    workspace
-                        .update(cx, |workspace, cx| {
-                            workspace.show_toast(
-                                workspace::Toast::new(
-                                    notification_id.clone(),
-                                    format!("Downloaded {} files", total_files),
-                                ),
-                                cx,
-                            );
-                        })
-                        .ok();
-                }
-            }
-        })
-        .detach();
+                            .detach();
+                    },
+                    workspace_for_modal.clone(),
+                    window,
+                    cx,
+                )
+            });
+        });
     }
 
     fn duplicate(&mut self, _: &Duplicate, window: &mut Window, cx: &mut Context<Self>) {
