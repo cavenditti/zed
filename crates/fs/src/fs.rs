@@ -236,6 +236,22 @@ pub trait Fs: Send + Sync {
     async fn copy_file(&self, source: &Path, target: &Path, options: CopyOptions) -> Result<()>;
     async fn rename(&self, source: &Path, target: &Path, options: RenameOptions) -> Result<()>;
 
+    #[cfg(unix)]
+    async fn set_permissions(&self, path: &Path, mode: u32) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let path = path.to_path_buf();
+        smol::unblock(move || {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+                .map_err(anyhow::Error::from)
+        })
+        .await
+    }
+
+    #[cfg(not(unix))]
+    async fn set_permissions(&self, _path: &Path, _mode: u32) -> Result<()> {
+        anyhow::bail!("set_permissions is only supported on unix");
+    }
+
     /// Removes a directory from the filesystem.
     /// There is no expectation that the directory will be preserved in the
     /// system trash.
