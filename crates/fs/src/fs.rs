@@ -252,6 +252,12 @@ pub trait Fs: Send + Sync {
         anyhow::bail!("set_permissions is only supported on unix");
     }
 
+    async fn create_hardlink(&self, link: &Path, target: PathBuf) -> Result<()> {
+        let link = link.to_path_buf();
+        smol::unblock(move || std::fs::hard_link(&target, &link).map_err(anyhow::Error::from))
+            .await
+    }
+
     /// Removes a directory from the filesystem.
     /// There is no expectation that the directory will be preserved in the
     /// system trash.
