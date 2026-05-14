@@ -131,6 +131,22 @@ pub fn collect_for_editor(editor: &Editor, mode: JumpMode) -> Vec<ResolvedCandid
         return Vec::new();
     };
 
+    // Editors that haven't painted recently still hold a stale
+    // `last_position_map`. Their `text_hitbox` reflects where they
+    // *used* to be on screen, so without this freshness gate they
+    // emit ghost candidates that paint chips over wherever the
+    // editor's old viewport sat. 250 ms is generous enough to cover
+    // a single dropped frame on slow rendering paths while still
+    // rejecting editors that have been hidden for any meaningful
+    // amount of time.
+    const PAINT_FRESHNESS: std::time::Duration = std::time::Duration::from_millis(250);
+    let Some(last_painted_at) = editor.last_painted_at else {
+        return Vec::new();
+    };
+    if last_painted_at.elapsed() > PAINT_FRESHNESS {
+        return Vec::new();
+    }
+
     let snapshot = &position_map.snapshot;
     let buffer = snapshot.buffer_snapshot();
     let display_snapshot = &snapshot.display_snapshot;

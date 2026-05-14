@@ -1317,6 +1317,11 @@ pub struct Editor {
     >,
     last_bounds: Option<Bounds<Pixels>>,
     last_position_map: Option<Rc<PositionMap>>,
+    // Wall-clock time of the most recent `EditorElement::paint`. The
+    // codon-jump editor provider gates on this so hidden editors that
+    // still hold a stale `last_position_map` don't contribute ghost
+    // candidates — see `codon_jump_provider::collect_for_editor`.
+    pub(crate) last_painted_at: Option<std::time::Instant>,
     expect_bounds_change: Option<Bounds<Pixels>>,
     runnables: RunnableData,
     bookmark_store: Option<Entity<BookmarkStore>>,
@@ -2559,6 +2564,7 @@ impl Editor {
             pixel_position_of_newest_cursor: None,
             last_bounds: None,
             last_position_map: None,
+            last_painted_at: None,
             expect_bounds_change: None,
             gutter_dimensions: GutterDimensions::default(),
             style: None,

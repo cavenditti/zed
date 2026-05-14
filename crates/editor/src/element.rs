@@ -11256,7 +11256,8 @@ impl Element for EditorElement {
                     });
 
                     self.editor.update(cx, |editor, _| {
-                        editor.last_position_map = Some(position_map.clone())
+                        editor.last_position_map = Some(position_map.clone());
+                        editor.last_painted_at = Some(std::time::Instant::now());
                     });
 
                     EditorLayout {
