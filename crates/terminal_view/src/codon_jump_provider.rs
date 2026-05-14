@@ -56,6 +56,18 @@ impl JumpProvider for TerminalJumpProvider {
         let mode = ctx.mode;
         let view_weak = self.terminal_view.clone();
         view_handle.read_with(cx, |view, cx| {
+            // Mirrors the editor freshness gate: a hidden TerminalView
+            // still owns a populated `Terminal::last_content` from its
+            // last paint, so without this check it would emit ghost
+            // candidates pointing at wherever the terminal used to sit.
+            const PAINT_FRESHNESS: std::time::Duration =
+                std::time::Duration::from_millis(250);
+            let Some(last_painted_at) = view.last_painted_at else {
+                return Vec::new();
+            };
+            if last_painted_at.elapsed() > PAINT_FRESHNESS {
+                return Vec::new();
+            }
             let terminal = view.terminal();
             terminal.read_with(cx, |terminal, _| {
                 collect_inner(view_weak.clone(), terminal, mode)
@@ -109,7 +121,7 @@ fn make_word_candidate(
     bounds: Bounds<Pixels>,
     cell: AlacPoint,
 ) -> JumpCandidate {
-    let action: Box<dyn FnOnce(&mut gpui::Window, &mut App) + Send> = Box::new(move |window, cx| {
+    let action: Box<dyn FnOnce(&mut gpui::Window, &mut App)> = Box::new(move |window, cx| {
         let Some(view) = view_weak.upgrade() else {
             return;
         };
@@ -134,7 +146,7 @@ fn make_url_candidate(
     url: String,
 ) -> JumpCandidate {
     let url_for_kind = url.clone();
-    let action: Box<dyn FnOnce(&mut gpui::Window, &mut App) + Send> = Box::new(move |window, cx| {
+    let action: Box<dyn FnOnce(&mut gpui::Window, &mut App)> = Box::new(move |window, cx| {
         cx.write_to_clipboard(ClipboardItem::new_string(url));
         if let Some(view) = view_weak.upgrade() {
             let handle = view.read(cx).focus_handle(cx);

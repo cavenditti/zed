@@ -1294,6 +1294,9 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) {
         let paint_start = Instant::now();
+        self.terminal_view.update(cx, |view, _| {
+            view.last_painted_at = Some(paint_start);
+        });
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let scroll_top = self.terminal_view.read(cx).scroll_top;
 

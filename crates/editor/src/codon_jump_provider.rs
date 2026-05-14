@@ -85,7 +85,7 @@ fn collect_inner(
     {
         let editor_for_action = editor_weak.clone();
         let kind_for_action = kind.clone();
-        let action: Box<dyn FnOnce(&mut gpui::Window, &mut App) + Send> =
+        let action: Box<dyn FnOnce(&mut gpui::Window, &mut App)> =
             Box::new(move |window, cx| {
                 let Some(editor_handle) = editor_for_action.upgrade() else {
                     return;

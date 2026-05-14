@@ -1290,6 +1290,14 @@ pub enum Event {
     Activate,
     PanelAdded(AnyView),
     WorktreeCreationChanged,
+    // Emitted whenever a pane scrolls. Currently sourced by codon-jump
+    // call sites only — the editor's `ScrollPositionChanged`,
+    // terminal_view's scroll handle, and the file-manager's list
+    // scrolling all need to forward into `Workspace::notify_scrolled`
+    // before this fires reliably. The variant exists today so the
+    // codon-jump overlay can subscribe and dismiss without further
+    // vendored-Zed plumbing; full coverage is a follow-up.
+    Scrolled,
 }
 
 #[derive(Debug, Clone)]
@@ -7813,6 +7821,15 @@ impl Workspace {
     pub fn hide_modal(&mut self, window: &mut Window, cx: &mut App) -> bool {
         self.modal_layer
             .update(cx, |modal_layer, cx| modal_layer.hide_modal(window, cx))
+    }
+
+    /// Emit `Event::Scrolled` so subscribers (currently just the
+    /// codon-jump overlay's `dismiss_on_scroll` path) can react. Pane
+    /// sources don't call this yet — the variant is exposed so the
+    /// overlay's subscription compiles, but plumbing it from each
+    /// scroll source is a follow-up.
+    pub fn notify_scrolled(&mut self, cx: &mut Context<Self>) {
+        cx.emit(Event::Scrolled);
     }
 
     pub fn toggle_status_toast<V: ToastView>(&mut self, entity: Entity<V>, cx: &mut App) {
