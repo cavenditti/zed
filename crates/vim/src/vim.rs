@@ -7,6 +7,7 @@ mod change_list;
 mod command;
 mod digraph;
 mod helix;
+pub use helix::HelixJumpToWord;
 mod indent;
 mod insert;
 mod mode_indicator;
