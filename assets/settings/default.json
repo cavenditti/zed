@@ -215,7 +215,7 @@
   // prompts.
   // When set to false, Zed will use its built-in prompts. Note that on Linux,
   // this option is ignored and Zed will always use the built-in prompts.
-  "use_system_prompts": true,
+  "use_system_prompts": false,
   // Whether the cursor blinks in the editor.
   "cursor_blink": true,
   // Cursor shape for the default editor.

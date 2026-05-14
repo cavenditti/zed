@@ -67,7 +67,17 @@ impl ZedPromptRenderer {
     }
 
     fn cancel(&mut self, _: &menu::Cancel, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ix) = self.actions.iter().position(|a| a == "Cancel") {
+        // Cancel order of preference: explicit "Cancel" → "No" / "Don't
+        // Save" (the "destructive-but-recoverable" answer in y/n/cancel
+        // prompts) → last button (typical OK-only info dialogs map Esc
+        // to the only available action so prompts always dismiss on
+        // Esc — no more "Esc does nothing" surprises).
+        let cancel_candidates = ["Cancel", "No", "Don't Save", "Discard", "Close"];
+        let ix = cancel_candidates
+            .iter()
+            .find_map(|label| self.actions.iter().position(|a| a == label))
+            .or_else(|| self.actions.len().checked_sub(1));
+        if let Some(ix) = ix {
             cx.emit(PromptResponse(ix));
         }
     }
