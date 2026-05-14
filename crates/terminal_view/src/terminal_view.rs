@@ -1,3 +1,4 @@
+pub mod codon_jump_provider;
 mod persistence;
 pub mod terminal_element;
 pub mod terminal_panel;
@@ -270,7 +271,7 @@ impl TerminalView {
             cx.observe_global::<SettingsStore>(Self::settings_changed),
         ];
 
-        Self {
+        let view = Self {
             terminal,
             workspace: workspace_handle,
             project,
@@ -298,7 +299,9 @@ impl TerminalView {
             rename_editor_subscription: None,
             _subscriptions: subscriptions,
             _terminal_subscriptions: terminal_subscriptions,
-        }
+        };
+        codon_jump_provider::TerminalJumpProvider::register(&cx.entity(), cx);
+        view
     }
 
     /// Enable 'embedded' mode where the terminal displays the full content with an optional limit of lines.

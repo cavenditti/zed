@@ -17,6 +17,7 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
+codon-jump.workspace = true
 codon-mode.workspace = true
 async-recursion.workspace = true
 breadcrumbs.workspace = true

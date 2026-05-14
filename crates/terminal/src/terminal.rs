@@ -1842,6 +1842,21 @@ impl Terminal {
             .push_back(InternalEvent::SetSelection(Some((selection, point))));
     }
 
+    /// Codon jump-hint helper: alacritty-select the word at `cell` via
+    /// the same `SelectionType::Semantic` machinery the double-click
+    /// path uses, but addressing the grid point directly instead of a
+    /// mouse position. `cell` is in the alacritty viewport frame the
+    /// jump provider yields.
+    pub fn select_word_at_cell(&mut self, cell: AlacPoint) {
+        let selection = Selection::new(
+            SelectionType::Semantic,
+            cell,
+            alacritty_terminal::index::Side::Left,
+        );
+        self.events
+            .push_back(InternalEvent::SetSelection(Some((selection, cell))));
+    }
+
     pub fn mouse_drag(
         &mut self,
         e: &MouseMoveEvent,
