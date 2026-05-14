@@ -80,6 +80,7 @@ use util::ResultExt as _;
 use workspace::{
     CollaboratorId, DraggedSelection, DraggedTab, PathList, SerializedPathList,
     ToggleWorkspaceSidebar, ToggleZoom, Workspace, WorkspaceId,
+    codon_jump_clickable::{JumpClickableExt, JumpListenerExt},
     dock::{DockPosition, Panel, PanelEvent},
 };
 
@@ -2772,6 +2773,15 @@ impl AgentPanel {
                                                     cx,
                                                 );
                                             }
+                                        })
+                                        .jump_target({
+                                            let conversation_view = conversation_view.clone();
+                                            move |_window, cx| {
+                                                Self::handle_regenerate_thread_title(
+                                                    conversation_view.clone(),
+                                                    cx,
+                                                );
+                                            }
                                         }),
                                 )
                                 .into_any_element()
@@ -2925,6 +2935,9 @@ impl AgentPanel {
                     Tooltip::for_action_in("Go Back", &workspace::GoBack, &focus_handle, cx)
                 }
             })
+            .jump_target(cx.jump_listener(|this, window, cx| {
+                this.go_back(&workspace::GoBack, window, cx);
+            }))
     }
 
     fn render_toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3193,6 +3206,10 @@ impl AgentPanel {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.toggle_zoom(&ToggleZoom, window, cx);
                 }))
+                .jump_target(cx.jump_listener(move |this, window, cx| {
+                    this.toggle_zoom(&ToggleZoom, window, cx);
+                }))
+                .into_any_element()
         } else {
             IconButton::new("enable-full-screen", IconName::Maximize)
                 .icon_size(IconSize::Small)
@@ -3200,6 +3217,10 @@ impl AgentPanel {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.toggle_zoom(&ToggleZoom, window, cx);
                 }))
+                .jump_target(cx.jump_listener(move |this, window, cx| {
+                    this.toggle_zoom(&ToggleZoom, window, cx);
+                }))
+                .into_any_element()
         };
 
         let use_v2_empty_toolbar = is_empty_state && !is_in_history_or_config;

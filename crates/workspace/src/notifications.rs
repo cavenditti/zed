@@ -17,6 +17,8 @@ use std::{any::TypeId, time::Duration};
 use ui::{CopyButton, Tooltip, prelude::*};
 use util::ResultExt;
 
+use crate::codon_jump_clickable::{JumpClickableExt, JumpListenerExt};
+
 #[derive(Default)]
 pub struct Notifications {
     notifications: Vec<(NotificationId, AnyView)>,
@@ -393,6 +395,15 @@ impl Render for LanguageServerPrompt {
                                                         this.dismiss_notification(cx);
                                                     }
                                                 },
+                                            ))
+                                            .jump_target(cx.jump_listener(
+                                                move |this, _, cx| {
+                                                    if suppress {
+                                                        cx.emit(SuppressEvent);
+                                                    } else {
+                                                        this.dismiss_notification(cx);
+                                                    }
+                                                },
                                             )),
                                     ),
                             ),
@@ -408,10 +419,23 @@ impl Render for LanguageServerPrompt {
                     )
                     .children(request.actions.iter().enumerate().map(|(ix, action)| {
                         let this_handle = cx.entity();
+                        let this_handle_jump = this_handle.clone();
                         Button::new(ix, action.title.clone())
                             .size(ButtonSize::Large)
-                            .on_click(move |_, window, cx| {
+                            .on_click({
                                 let this_handle = this_handle.clone();
+                                move |_, window, cx| {
+                                    let this_handle = this_handle.clone();
+                                    window
+                                        .spawn(cx, async move |cx| {
+                                            LanguageServerPrompt::select_option(this_handle, ix, cx)
+                                                .await
+                                        })
+                                        .detach()
+                                }
+                            })
+                            .jump_target(move |window, cx| {
+                                let this_handle = this_handle_jump.clone();
                                 window
                                     .spawn(cx, async move |cx| {
                                         LanguageServerPrompt::select_option(this_handle, ix, cx)
@@ -533,9 +557,13 @@ impl Render for ErrorMessagePrompt {
                                             .tooltip_label("Copy Error Message"),
                                     )
                                     .child(
-                                        ui::IconButton::new("close", ui::IconName::Close).on_click(
-                                            cx.listener(|_, _, _, cx| cx.emit(DismissEvent)),
-                                        ),
+                                        ui::IconButton::new("close", ui::IconName::Close)
+                                            .on_click(cx.listener(|_, _, _, cx| {
+                                                cx.emit(DismissEvent)
+                                            }))
+                                            .jump_target(cx.jump_listener(|_, _, cx| {
+                                                cx.emit(DismissEvent)
+                                            })),
                                     ),
                             ),
                     )
@@ -548,10 +576,12 @@ impl Render for ErrorMessagePrompt {
                             .child(Label::new(self.message.clone()).size(LabelSize::Small)),
                     )
                     .when_some(self.label_and_url_button.clone(), |elm, (label, url)| {
+                        let url_for_jump = url.clone();
                         elm.child(
                             div().mt_2().child(
                                 ui::Button::new("error_message_prompt_notification_button", label)
-                                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                                    .on_click(move |_, _, cx| cx.open_url(&url))
+                                    .jump_target(move |_, cx| cx.open_url(&url_for_jump)),
                             ),
                         )
                     }),
@@ -575,7 +605,7 @@ pub struct NotificationFrame {
     title: Option<SharedString>,
     show_suppress_button: bool,
     show_close_button: bool,
-    close: Option<Box<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
+    close: Option<Arc<dyn Fn(&bool, &mut Window, &mut App) + 'static>>,
     contents: Option<AnyElement>,
     suffix: Option<AnyElement>,
 }
@@ -618,7 +648,7 @@ impl NotificationFrame {
 
     pub fn on_close(self, on_close: impl Fn(&bool, &mut Window, &mut App) + 'static) -> Self {
         Self {
-            close: Some(Box::new(on_close)),
+            close: Some(Arc::new(on_close)),
             ..self
         }
     }
@@ -659,6 +689,8 @@ impl RenderOnce for NotificationFrame {
                             .child(div().max_w_96().children(self.contents)),
                     )
                     .when(self.show_close_button, |this| {
+                        let close = self.close.take();
+                        let close_for_jump = close.clone();
                         this.on_modifiers_changed(move |_, _, cx| cx.notify(entity))
                             .child(
                                 IconButton::new(close_id, close_icon)
@@ -681,12 +713,14 @@ impl RenderOnce for NotificationFrame {
                                             Tooltip::for_action("Close", &menu::Cancel, cx)
                                         }
                                     })
-                                    .on_click({
-                                        let close = self.close.take();
-                                        move |_, window, cx| {
-                                            if let Some(close) = &close {
-                                                close(&suppress, window, cx)
-                                            }
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(close) = &close {
+                                            close(&suppress, window, cx)
+                                        }
+                                    })
+                                    .jump_target(move |window, cx| {
+                                        if let Some(close) = &close_for_jump {
+                                            close(&suppress, window, cx)
                                         }
                                     }),
                             )
@@ -707,6 +741,7 @@ pub mod simple_message_notification {
     };
     use ui::{WithScrollbar, prelude::*};
 
+    use crate::codon_jump_clickable::{JumpClickableExt, JumpListenerExt};
     use crate::notifications::NotificationFrame;
 
     use super::{Notification, SuppressEvent};
@@ -914,7 +949,7 @@ pub mod simple_message_notification {
                     h_flex()
                         .gap_1()
                         .children(self.primary_message.iter().map(|message| {
-                            let mut button = Button::new(message.clone(), message.clone())
+                            let button = Button::new(message.clone(), message.clone())
                                 .label_size(LabelSize::Small)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     if let Some(on_click) = this.primary_on_click.as_ref() {
@@ -923,18 +958,25 @@ pub mod simple_message_notification {
                                     this.dismiss(cx)
                                 }));
 
-                            if let Some(icon) = self.primary_icon {
-                                button = button.start_icon(
+                            let button = if let Some(icon) = self.primary_icon {
+                                button.start_icon(
                                     Icon::new(icon)
                                         .size(IconSize::Small)
                                         .color(self.primary_icon_color.unwrap_or(Color::Muted)),
-                                );
-                            }
+                                )
+                            } else {
+                                button
+                            };
 
-                            button
+                            button.jump_target(cx.jump_listener(|this, window, cx| {
+                                if let Some(on_click) = this.primary_on_click.as_ref() {
+                                    (on_click)(window, cx)
+                                };
+                                this.dismiss(cx)
+                            }))
                         }))
                         .children(self.secondary_message.iter().map(|message| {
-                            let mut button = Button::new(message.clone(), message.clone())
+                            let button = Button::new(message.clone(), message.clone())
                                 .label_size(LabelSize::Small)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     if let Some(on_click) = this.secondary_on_click.as_ref() {
@@ -943,15 +985,22 @@ pub mod simple_message_notification {
                                     this.dismiss(cx)
                                 }));
 
-                            if let Some(icon) = self.secondary_icon {
-                                button = button.start_icon(
+                            let button = if let Some(icon) = self.secondary_icon {
+                                button.start_icon(
                                     Icon::new(icon)
                                         .size(IconSize::Small)
                                         .color(self.secondary_icon_color.unwrap_or(Color::Muted)),
-                                );
-                            }
+                                )
+                            } else {
+                                button
+                            };
 
-                            button
+                            button.jump_target(cx.jump_listener(|this, window, cx| {
+                                if let Some(on_click) = this.secondary_on_click.as_ref() {
+                                    (on_click)(window, cx)
+                                };
+                                this.dismiss(cx)
+                            }))
                         }))
                         .child(
                             h_flex().w_full().justify_end().children(
@@ -960,6 +1009,7 @@ pub mod simple_message_notification {
                                     .zip(self.more_info_url.iter())
                                     .map(|(message, url)| {
                                         let url = url.clone();
+                                        let url_for_jump = url.clone();
                                         Button::new(message.clone(), message.clone())
                                             .label_size(LabelSize::Small)
                                             .end_icon(
@@ -970,6 +1020,9 @@ pub mod simple_message_notification {
                                             .on_click(cx.listener(move |_, _, _, cx| {
                                                 cx.open_url(&url);
                                             }))
+                                            .jump_target(move |_, cx| {
+                                                cx.open_url(&url_for_jump);
+                                            })
                                     }),
                             ),
                         ),

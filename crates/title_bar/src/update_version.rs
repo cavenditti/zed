@@ -94,27 +94,37 @@ impl Render for UpdateVersion {
             }
             AutoUpdateStatus::Updated { version } => {
                 let tooltip = Self::version_tooltip_message(&version);
-                UpdateButton::updated(tooltip)
-                    .on_click(|_, _, cx| {
+                workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                    UpdateButton::updated(tooltip)
+                        .on_click(|_, _, cx| {
+                            workspace::reload(cx);
+                        })
+                        .on_dismiss(cx.listener(|this, _, _window, cx| {
+                            this.dismissed = true;
+                            cx.notify()
+                        })),
+                    |_window, cx| {
                         workspace::reload(cx);
-                    })
-                    .on_dismiss(cx.listener(|this, _, _window, cx| {
-                        this.dismissed = true;
-                        cx.notify()
-                    }))
-                    .into_any_element()
+                    },
+                )
+                .into_any_element()
             }
             AutoUpdateStatus::Errored { error } => {
                 let error_str = error.to_string();
-                UpdateButton::errored(error_str)
-                    .on_click(|_, window, cx| {
+                workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                    UpdateButton::errored(error_str)
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(workspace::OpenLog), cx);
+                        })
+                        .on_dismiss(cx.listener(|this, _, _window, cx| {
+                            this.dismissed = true;
+                            cx.notify()
+                        })),
+                    |window, cx| {
                         window.dispatch_action(Box::new(workspace::OpenLog), cx);
-                    })
-                    .on_dismiss(cx.listener(|this, _, _window, cx| {
-                        this.dismissed = true;
-                        cx.notify()
-                    }))
-                    .into_any_element()
+                    },
+                )
+                .into_any_element()
             }
             AutoUpdateStatus::Idle | AutoUpdateStatus::Checking { .. } => Empty.into_any_element(),
         }

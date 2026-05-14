@@ -3009,6 +3009,7 @@ impl Pane {
             .map(|this| {
                 let end_slot_action: &'static dyn Action;
                 let end_slot_tooltip_text: &'static str;
+                let end_slot_pane = cx.entity().downgrade();
                 let end_slot = if is_pinned {
                     end_slot_action = &TogglePinTab;
                     end_slot_tooltip_text = "Unpin Tab";
@@ -3057,6 +3058,21 @@ impl Pane {
                         this.tooltip(Tooltip::text(end_slot_tooltip_text))
                     }
                 });
+                let end_slot = crate::codon_jump_clickable::JumpClickableExt::jump_target(
+                    end_slot,
+                    move |window, cx| {
+                        if let Some(pane) = end_slot_pane.upgrade() {
+                            pane.update(cx, |pane, cx| {
+                                if is_pinned {
+                                    pane.unpin_tab_at(ix, window, cx);
+                                } else {
+                                    pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
+                                        .detach_and_log_err(cx);
+                                }
+                            });
+                        }
+                    },
+                );
                 this.end_slot(end_slot)
             })
             .child(
@@ -3436,6 +3452,8 @@ impl Pane {
 
         let focus_handle = self.focus_handle.clone();
 
+        let can_navigate_backward = self.can_navigate_backward();
+        let can_navigate_forward = self.can_navigate_forward();
         let navigate_backward = IconButton::new("navigate_backward", IconName::ArrowLeft)
             .icon_size(IconSize::Small)
             .on_click({
@@ -3446,7 +3464,7 @@ impl Pane {
                     })
                 }
             })
-            .disabled(!self.can_navigate_backward())
+            .disabled(!can_navigate_backward)
             .tooltip({
                 let focus_handle = focus_handle.clone();
                 move |window, cx| {
@@ -3458,6 +3476,16 @@ impl Pane {
                     )
                 }
             });
+        let navigate_backward: AnyElement = if can_navigate_backward {
+            use crate::codon_jump_clickable::{JumpClickableExt, JumpListenerExt};
+            navigate_backward
+                .jump_target(cx.jump_listener(|pane, window, cx| {
+                    pane.navigate_backward(&Default::default(), window, cx)
+                }))
+                .into_any_element()
+        } else {
+            navigate_backward.into_any_element()
+        };
 
         let navigate_forward = IconButton::new("navigate_forward", IconName::ArrowRight)
             .icon_size(IconSize::Small)
@@ -3469,7 +3497,7 @@ impl Pane {
                     })
                 }
             })
-            .disabled(!self.can_navigate_forward())
+            .disabled(!can_navigate_forward)
             .tooltip({
                 let focus_handle = focus_handle.clone();
                 move |window, cx| {
@@ -3481,6 +3509,16 @@ impl Pane {
                     )
                 }
             });
+        let navigate_forward: AnyElement = if can_navigate_forward {
+            use crate::codon_jump_clickable::{JumpClickableExt, JumpListenerExt};
+            navigate_forward
+                .jump_target(cx.jump_listener(|pane, window, cx| {
+                    pane.navigate_forward(&Default::default(), window, cx)
+                }))
+                .into_any_element()
+        } else {
+            navigate_forward.into_any_element()
+        };
 
         let mut tab_items = self
             .items
@@ -3535,8 +3573,8 @@ impl Pane {
     fn configure_tab_bar_start(
         &mut self,
         tab_bar: TabBar,
-        navigate_backward: IconButton,
-        navigate_forward: IconButton,
+        navigate_backward: AnyElement,
+        navigate_forward: AnyElement,
         window: &mut Window,
         cx: &mut Context<Pane>,
     ) -> TabBar {
@@ -3567,8 +3605,8 @@ impl Pane {
         pinned_tabs: Vec<AnyElement>,
         unpinned_tabs: Vec<AnyElement>,
         tab_count: usize,
-        navigate_backward: IconButton,
-        navigate_forward: IconButton,
+        navigate_backward: AnyElement,
+        navigate_forward: AnyElement,
         window: &mut Window,
         cx: &mut Context<Pane>,
     ) -> AnyElement {
@@ -3605,8 +3643,8 @@ impl Pane {
         pinned_tabs: Vec<AnyElement>,
         unpinned_tabs: Vec<AnyElement>,
         tab_count: usize,
-        navigate_backward: IconButton,
-        navigate_forward: IconButton,
+        navigate_backward: AnyElement,
+        navigate_forward: AnyElement,
         window: &mut Window,
         cx: &mut Context<Pane>,
     ) -> AnyElement {
@@ -4244,35 +4282,43 @@ fn default_render_tab_bar_buttons(
     };
     // Ideally we would return a vec of elements here to pass directly to the [TabBar]'s
     // `end_slot`, but due to needing a view here that isn't possible.
+    let new_menu_handle = pane.new_item_context_menu_handle.clone();
+    let split_menu_handle = pane.split_item_context_menu_handle.clone();
+    let split_can_open = can_clone || can_split_move;
     let right_children = h_flex()
         // Instead we need to replicate the spacing from the [TabBar]'s `end_slot` here.
         .gap(DynamicSpacing::Base04.rems(cx))
         .child(
-            PopoverMenu::new("pane-tab-bar-popover-menu")
-                .trigger_with_tooltip(
-                    IconButton::new("plus", IconName::Plus).icon_size(IconSize::Small),
-                    Tooltip::text("New..."),
-                )
-                .anchor(Anchor::TopRight)
-                .with_handle(pane.new_item_context_menu_handle.clone())
-                .menu(move |window, cx| {
-                    Some(ContextMenu::build(window, cx, |menu, _, _| {
-                        menu.action("New File", NewFile.boxed_clone())
-                            .action("Open File", ToggleFileFinder::default().boxed_clone())
-                            .separator()
-                            .action("Search Project", DeploySearch::default().boxed_clone())
-                            .action("Search Symbols", ToggleProjectSymbols.boxed_clone())
-                            .separator()
-                            .action("New Terminal", NewTerminal::default().boxed_clone())
-                            .action(
-                                "New Center Terminal",
-                                NewCenterTerminal::default().boxed_clone(),
-                            )
-                    }))
-                }),
+            crate::codon_jump_clickable::JumpClickableExt::jump_target(
+                PopoverMenu::new("pane-tab-bar-popover-menu")
+                    .trigger_with_tooltip(
+                        IconButton::new("plus", IconName::Plus).icon_size(IconSize::Small),
+                        Tooltip::text("New..."),
+                    )
+                    .anchor(Anchor::TopRight)
+                    .with_handle(pane.new_item_context_menu_handle.clone())
+                    .menu(move |window, cx| {
+                        Some(ContextMenu::build(window, cx, |menu, _, _| {
+                            menu.action("New File", NewFile.boxed_clone())
+                                .action("Open File", ToggleFileFinder::default().boxed_clone())
+                                .separator()
+                                .action("Search Project", DeploySearch::default().boxed_clone())
+                                .action("Search Symbols", ToggleProjectSymbols.boxed_clone())
+                                .separator()
+                                .action("New Terminal", NewTerminal::default().boxed_clone())
+                                .action(
+                                    "New Center Terminal",
+                                    NewCenterTerminal::default().boxed_clone(),
+                                )
+                        }))
+                    }),
+                move |window, cx| {
+                    new_menu_handle.toggle(window, cx);
+                },
+            ),
         )
-        .child(
-            PopoverMenu::new("pane-tab-bar-split")
+        .child({
+            let popover = PopoverMenu::new("pane-tab-bar-split")
                 .trigger_with_tooltip(
                     IconButton::new("split", IconName::Split)
                         .icon_size(IconSize::Small)
@@ -4297,9 +4343,21 @@ fn default_render_tab_bar_buttons(
                         }
                     })
                     .into()
-                }),
-        )
+                });
+            if split_can_open {
+                crate::codon_jump_clickable::JumpClickableExt::jump_target(
+                    popover,
+                    move |window, cx| {
+                        split_menu_handle.toggle(window, cx);
+                    },
+                )
+                .into_any_element()
+            } else {
+                popover.into_any_element()
+            }
+        })
         .child({
+            use crate::codon_jump_clickable::{JumpClickableExt, JumpListenerExt};
             let zoomed = pane.is_zoomed();
             IconButton::new("toggle_zoom", IconName::Maximize)
                 .icon_size(IconSize::Small)
@@ -4315,6 +4373,9 @@ fn default_render_tab_bar_buttons(
                         cx,
                     )
                 })
+                .jump_target(cx.jump_listener(|pane, window, cx| {
+                    pane.toggle_zoom(&crate::ToggleZoom, window, cx);
+                }))
         })
         .into_any_element()
         .into();

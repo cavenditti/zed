@@ -8289,6 +8289,20 @@ pub fn render_breadcrumb_text(
                                 }
                             })
                         })
+                    })
+                    .map(|button| {
+                        let editor = editor.clone();
+                        workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                            button,
+                            move |window, cx| {
+                                if let Some((editor, callback)) = editor
+                                    .upgrade()
+                                    .zip(zed_actions::outline::TOGGLE_OUTLINE.get())
+                                {
+                                    callback(editor.to_any_view(), window, cx);
+                                }
+                            },
+                        )
                     }),
             )
             .into_any_element(),

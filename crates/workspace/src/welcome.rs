@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use settings::Settings;
 use ui::{ButtonLike, Divider, DividerColor, KeyBinding, Vector, VectorName, prelude::*};
 use util::ResultExt;
+
+use crate::codon_jump_clickable::JumpClickableExt;
 use zed_actions::{
     Extensions, OpenKeymap, OpenOnboarding, OpenSettings, assistant::ToggleFocus, command_palette,
     file_manager::OpenFileManager,
@@ -102,6 +104,9 @@ impl RenderOnce for SectionButton {
         let id = format!("onb-button-{}-{}", self.label, self.tab_index);
         let action_ref: &dyn Action = &*self.action;
 
+        let focus_handle = self.focus_handle.clone();
+        let action_for_jump = self.action.boxed_clone();
+
         ButtonLike::new(id)
             .tab_index(self.tab_index as isize)
             .full_width()
@@ -127,6 +132,9 @@ impl RenderOnce for SectionButton {
             )
             .on_click(move |_, window, cx| {
                 self.focus_handle.dispatch_action(&*self.action, window, cx)
+            })
+            .jump_target(move |window, cx| {
+                focus_handle.dispatch_action(&*action_for_jump, window, cx)
             })
     }
 }
@@ -381,7 +389,8 @@ impl WelcomePage {
                     .color(Color::Muted)
                     .mb_2(),
             )
-            .child(
+            .child({
+                let focus_for_jump = self.focus_handle.clone();
                 Button::new("open-agent", "Open Agent Panel")
                     .full_width()
                     .tab_index(tab_index as isize)
@@ -393,8 +402,12 @@ impl WelcomePage {
                     .on_click(move |_, window, cx| {
                         focus.dispatch_action(&ToggleWorkspaceSidebar, window, cx);
                         focus.dispatch_action(&ToggleFocus, window, cx);
-                    }),
-            )
+                    })
+                    .jump_target(move |window, cx| {
+                        focus_for_jump.dispatch_action(&ToggleWorkspaceSidebar, window, cx);
+                        focus_for_jump.dispatch_action(&ToggleFocus, window, cx);
+                    })
+            })
     }
 
     fn render_shortcuts_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -559,6 +572,9 @@ impl Render for WelcomePage {
                                     .full_width()
                                     .label_size(LabelSize::XSmall)
                                     .on_click(|_, window, cx| {
+                                        window.dispatch_action(OpenOnboarding.boxed_clone(), cx);
+                                    })
+                                    .jump_target(|window, cx| {
                                         window.dispatch_action(OpenOnboarding.boxed_clone(), cx);
                                     }),
                             ),

@@ -704,29 +704,40 @@ impl TitleBar {
             .participant_indices()
             .get(&host_user.id)?;
 
-        Some(
-            Button::new("project_owner_trigger", host_user.github_login.clone())
-                .color(Color::Player(participant_index.0))
-                .label_size(LabelSize::Small)
-                .tooltip(move |_, cx| {
-                    let tooltip_title = format!(
-                        "{} is sharing this project. Click to follow.",
-                        host_user.github_login
-                    );
+        let host_peer_id = host.peer_id;
+        let workspace = self.workspace.clone();
+        let button = Button::new("project_owner_trigger", host_user.github_login.clone())
+            .color(Color::Player(participant_index.0))
+            .label_size(LabelSize::Small)
+            .tooltip(move |_, cx| {
+                let tooltip_title = format!(
+                    "{} is sharing this project. Click to follow.",
+                    host_user.github_login
+                );
 
-                    Tooltip::with_meta(tooltip_title, None, "Click to Follow", cx)
+                Tooltip::with_meta(tooltip_title, None, "Click to Follow", cx)
+            })
+            .on_click({
+                cx.listener(move |this, _, window, cx| {
+                    this.workspace
+                        .update(cx, |workspace, cx| {
+                            workspace.follow(host_peer_id, window, cx);
+                        })
+                        .log_err();
                 })
-                .on_click({
-                    let host_peer_id = host.peer_id;
-                    cx.listener(move |this, _, window, cx| {
-                        this.workspace
-                            .update(cx, |workspace, cx| {
-                                workspace.follow(host_peer_id, window, cx);
-                            })
-                            .log_err();
-                    })
-                })
-                .into_any_element(),
+            });
+        Some(
+            workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                button,
+                move |window, cx| {
+                    workspace
+                        .update(cx, |workspace, cx| {
+                            workspace.follow(host_peer_id, window, cx);
+                        })
+                        .log_err();
+                },
+            )
+            .into_any_element(),
         )
     }
 
@@ -779,7 +790,7 @@ impl TitleBar {
             .map(|mw| mw.read(cx).project_group_keys())
             .unwrap_or_default();
 
-        PopoverMenu::new("recent-projects-menu")
+        let menu = PopoverMenu::new("recent-projects-menu")
             .menu(move |window, cx| {
                 Some(recent_projects::RecentProjects::popover(
                     workspace.clone(),
@@ -812,8 +823,17 @@ impl TitleBar {
                     )
                 },
             )
-            .anchor(gpui::Anchor::TopLeft)
-            .into_any_element()
+            .anchor(gpui::Anchor::TopLeft);
+        workspace::codon_jump_clickable::JumpClickableExt::jump_target(menu, |window, cx| {
+            window.dispatch_action(
+                zed_actions::OpenRecent {
+                    create_new_window: false,
+                }
+                .boxed_clone(),
+                cx,
+            );
+        })
+        .into_any_element()
     }
 
     fn render_recent_projects_popover(
@@ -836,7 +856,7 @@ impl TitleBar {
             .map(|mw| mw.read(cx).project_group_keys())
             .unwrap_or_default();
 
-        PopoverMenu::new("sidebar-title-recent-projects-menu")
+        let menu = PopoverMenu::new("sidebar-title-recent-projects-menu")
             .menu(move |window, cx| {
                 Some(recent_projects::RecentProjects::popover(
                     workspace.clone(),
@@ -869,7 +889,16 @@ impl TitleBar {
                     )
                 },
             )
-            .anchor(gpui::Anchor::TopLeft)
+            .anchor(gpui::Anchor::TopLeft);
+        workspace::codon_jump_clickable::JumpClickableExt::jump_target(menu, |window, cx| {
+            window.dispatch_action(
+                zed_actions::OpenRecent {
+                    create_new_window: false,
+                }
+                .boxed_clone(),
+                cx,
+            );
+        })
     }
 
     fn render_worktree_and_branch(
@@ -945,7 +974,7 @@ impl TitleBar {
         let worktree_button = {
             let project = self.project.clone();
             let workspace_handle = workspace.downgrade();
-            PopoverMenu::new("worktree-picker-menu")
+            let menu = PopoverMenu::new("worktree-picker-menu")
                 .menu(move |window, cx| {
                     // When opened from the title bar, focus is on the trigger
                     // button (not a dock), so `focused_dock` is `None`. That's
@@ -974,7 +1003,10 @@ impl TitleBar {
                         )
                     },
                 )
-                .anchor(gpui::Anchor::TopLeft)
+                .anchor(gpui::Anchor::TopLeft);
+            workspace::codon_jump_clickable::JumpClickableExt::jump_target(menu, |window, cx| {
+                window.dispatch_action(zed_actions::git::Worktree.boxed_clone(), cx);
+            })
         };
 
         let branch_picker = branch_name.and_then(|branch_name| {
@@ -1007,7 +1039,7 @@ impl TitleBar {
                         )
                 };
 
-                PopoverMenu::new("branch-menu")
+                let menu = PopoverMenu::new("branch-menu")
                     .menu(move |window, cx| {
                         Some(git_ui::git_picker::popover(
                             workspace.downgrade(),
@@ -1031,7 +1063,13 @@ impl TitleBar {
                             cx,
                         )
                     })
-                    .anchor(gpui::Anchor::TopLeft)
+                    .anchor(gpui::Anchor::TopLeft);
+                workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                    menu,
+                    |window, cx| {
+                        window.dispatch_action(zed_actions::git::Branch.boxed_clone(), cx);
+                    },
+                )
             })
         });
 
@@ -1133,9 +1171,19 @@ impl TitleBar {
                 };
 
                 Some(
-                    Button::new("connection-status", label)
-                        .label_size(LabelSize::Small)
-                        .on_click(|_, window, cx| {
+                    workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                        Button::new("connection-status", label)
+                            .label_size(LabelSize::Small)
+                            .on_click(|_, window, cx| {
+                                if let Some(auto_updater) = auto_update::AutoUpdater::get(cx)
+                                    && auto_updater.read(cx).status().is_updated()
+                                {
+                                    workspace::reload(cx);
+                                    return;
+                                }
+                                auto_update::check(&Default::default(), window, cx);
+                            }),
+                        |window, cx| {
                             if let Some(auto_updater) = auto_update::AutoUpdater::get(cx)
                                 && auto_updater.read(cx).status().is_updated()
                             {
@@ -1143,8 +1191,9 @@ impl TitleBar {
                                 return;
                             }
                             auto_update::check(&Default::default(), window, cx);
-                        })
-                        .into_any_element(),
+                        },
+                    )
+                    .into_any_element(),
                 )
             }
             _ => None,

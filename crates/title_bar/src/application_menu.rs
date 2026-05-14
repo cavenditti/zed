@@ -152,25 +152,31 @@ impl ApplicationMenu {
         let menu_name = entry.menu.name.clone();
         let entry = entry.clone();
 
+        let jump_handle = handle.clone();
         // Application menu must have same ids as first menu item in standard menu
         div()
             .id(format!("{}-menu-item", menu_name))
             .occlude()
             .child(
-                PopoverMenu::new(format!("{}-menu-popover", menu_name))
-                    .menu(move |window, cx| {
-                        Self::build_menu_from_items(entry.clone(), window, cx).into()
-                    })
-                    .trigger_with_tooltip(
-                        IconButton::new(
-                            SharedString::from(format!("{}-menu-trigger", menu_name)),
-                            ui::IconName::Menu,
+                workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                    PopoverMenu::new(format!("{}-menu-popover", menu_name))
+                        .menu(move |window, cx| {
+                            Self::build_menu_from_items(entry.clone(), window, cx).into()
+                        })
+                        .trigger_with_tooltip(
+                            IconButton::new(
+                                SharedString::from(format!("{}-menu-trigger", menu_name)),
+                                ui::IconName::Menu,
+                            )
+                            .style(ButtonStyle::Subtle)
+                            .icon_size(IconSize::Small),
+                            Tooltip::text("Open Application Menu"),
                         )
-                        .style(ButtonStyle::Subtle)
-                        .icon_size(IconSize::Small),
-                        Tooltip::text("Open Application Menu"),
-                    )
-                    .with_handle(handle),
+                        .with_handle(handle),
+                    move |window, cx| {
+                        jump_handle.toggle(window, cx);
+                    },
+                ),
             )
     }
 
@@ -186,23 +192,29 @@ impl ApplicationMenu {
             .map(|entry| entry.handle.clone())
             .collect();
 
+        let jump_handle = current_handle.clone();
         div()
             .id(format!("{}-menu-item", menu_name))
             .occlude()
             .child(
-                PopoverMenu::new(format!("{}-menu-popover", menu_name))
-                    .menu(move |window, cx| {
-                        Self::build_menu_from_items(entry.clone(), window, cx).into()
-                    })
-                    .trigger(
-                        Button::new(
-                            SharedString::from(format!("{}-menu-trigger", menu_name)),
-                            menu_name,
+                workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                    PopoverMenu::new(format!("{}-menu-popover", menu_name))
+                        .menu(move |window, cx| {
+                            Self::build_menu_from_items(entry.clone(), window, cx).into()
+                        })
+                        .trigger(
+                            Button::new(
+                                SharedString::from(format!("{}-menu-trigger", menu_name)),
+                                menu_name,
+                            )
+                            .style(ButtonStyle::Subtle)
+                            .label_size(LabelSize::Small),
                         )
-                        .style(ButtonStyle::Subtle)
-                        .label_size(LabelSize::Small),
-                    )
-                    .with_handle(current_handle.clone()),
+                        .with_handle(current_handle.clone()),
+                    move |window, cx| {
+                        jump_handle.toggle(window, cx);
+                    },
+                ),
             )
             .on_hover(move |hover_enter, window, cx| {
                 if *hover_enter && !current_handle.is_deployed() {

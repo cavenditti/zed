@@ -49,6 +49,7 @@ use util::{ResultExt as _, paths::PathMatcher, rel_path::RelPath};
 use workspace::{
     DeploySearch, ItemNavHistory, NewSearch, ToolbarItemEvent, ToolbarItemLocation,
     ToolbarItemView, Workspace, WorkspaceId,
+    codon_jump_clickable::{JumpClickableExt, JumpListenerExt},
     item::{Item, ItemEvent, ItemHandle, SaveOptions},
     searchable::{Direction, SearchEvent, SearchToken, SearchableItem, SearchableItemHandle},
 };
@@ -1735,6 +1736,9 @@ impl ProjectSearchView {
                     .key_binding(KeyBinding::for_action_in(&ToggleFilters, &focus_handle, cx))
                     .on_click(|_event, window, cx| {
                         window.dispatch_action(ToggleFilters.boxed_clone(), cx)
+                    })
+                    .jump_target(|window, cx| {
+                        window.dispatch_action(ToggleFilters.boxed_clone(), cx)
                     }),
             )
             .child(
@@ -1743,6 +1747,9 @@ impl ProjectSearchView {
                     .key_binding(KeyBinding::for_action_in(&ToggleReplace, &focus_handle, cx))
                     .on_click(|_event, window, cx| {
                         window.dispatch_action(ToggleReplace.boxed_clone(), cx)
+                    })
+                    .jump_target(|window, cx| {
+                        window.dispatch_action(ToggleReplace.boxed_clone(), cx)
                     }),
             )
             .child(
@@ -1750,6 +1757,9 @@ impl ProjectSearchView {
                     .start_icon(Icon::new(IconName::Regex).size(IconSize::Small))
                     .key_binding(KeyBinding::for_action_in(&ToggleRegex, &focus_handle, cx))
                     .on_click(|_event, window, cx| {
+                        window.dispatch_action(ToggleRegex.boxed_clone(), cx)
+                    })
+                    .jump_target(|window, cx| {
                         window.dispatch_action(ToggleRegex.boxed_clone(), cx)
                     }),
             )
@@ -1763,6 +1773,9 @@ impl ProjectSearchView {
                     ))
                     .on_click(|_event, window, cx| {
                         window.dispatch_action(ToggleCaseSensitive.boxed_clone(), cx)
+                    })
+                    .jump_target(|window, cx| {
+                        window.dispatch_action(ToggleCaseSensitive.boxed_clone(), cx)
                     }),
             )
             .child(
@@ -1774,6 +1787,9 @@ impl ProjectSearchView {
                         cx,
                     ))
                     .on_click(|_event, window, cx| {
+                        window.dispatch_action(ToggleWholeWord.boxed_clone(), cx)
+                    })
+                    .jump_target(|window, cx| {
                         window.dispatch_action(ToggleWholeWord.boxed_clone(), cx)
                     }),
             )
@@ -2355,7 +2371,10 @@ impl Render for ProjectSearchBar {
                                 cx,
                             )
                         }
-                    }),
+                    })
+                    .jump_target(cx.jump_listener(|this, window, cx| {
+                        this.toggle_filters(window, cx);
+                    })),
             )
             .child(render_action_button(
                 "project-search",
@@ -2389,6 +2408,13 @@ impl Render for ProjectSearchBar {
                 )
             })
             .on_click(cx.listener(|this, _, window, cx| {
+                if let Some(active_view) = &this.active_project_search {
+                    active_view.update(cx, |active_view, cx| {
+                        active_view.toggle_all_search_results(&ToggleAllSearchResults, window, cx);
+                    })
+                }
+            }))
+            .jump_target(cx.jump_listener(|this, window, cx| {
                 if let Some(active_view) = &this.active_project_search {
                     active_view.update(cx, |active_view, cx| {
                         active_view.toggle_all_search_results(&ToggleAllSearchResults, window, cx);
@@ -2468,6 +2494,9 @@ impl Render for ProjectSearchBar {
                         .toggle_state(self.is_opened_only_enabled(cx))
                         .tooltip(Tooltip::text("Only Search Open Files"))
                         .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_opened_only(window, cx);
+                        }))
+                        .jump_target(cx.jump_listener(|this, window, cx| {
                             this.toggle_opened_only(window, cx);
                         })),
                 )

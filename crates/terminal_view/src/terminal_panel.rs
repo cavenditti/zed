@@ -32,6 +32,7 @@ use workspace::{
     MoveItemToPaneInDirection, MovePaneDown, MovePaneLeft, MovePaneRight, MovePaneUp, Pane,
     PaneGroup, SplitDirection, SplitDown, SplitLeft, SplitMode, SplitRight, SplitUp, SwapPaneDown,
     SwapPaneLeft, SwapPaneRight, SwapPaneUp, ToggleZoom, Workspace,
+    codon_jump_clickable::{JumpClickableExt, JumpListenerExt},
     dock::{DockPosition, Panel, PanelEvent, PanelHandle},
     item::SerializableItem,
     move_active_item, pane,
@@ -224,6 +225,9 @@ impl TerminalPanel {
                                     cx,
                                 )
                             })
+                            .jump_target(cx.jump_listener(|pane, window, cx| {
+                                pane.toggle_zoom(&workspace::ToggleZoom, window, cx);
+                            }))
                     })
                     .into_any_element()
                     .into();
@@ -1711,6 +1715,9 @@ impl Render for InlineAssistTabBarButton {
             }))
             .tooltip(move |_window, cx| {
                 Tooltip::for_action_in("Inline Assist", &InlineAssist::default(), &focus_handle, cx)
+            })
+            .jump_target(|window, cx| {
+                window.dispatch_action(InlineAssist::default().boxed_clone(), cx);
             })
     }
 }

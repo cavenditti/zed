@@ -2717,6 +2717,9 @@ impl Editor {
                         editor.update_data_on_scroll(true, window, cx);
                     }
                     editor.refresh_sticky_headers(&editor.snapshot(window, cx), cx);
+                    if let Some(workspace) = editor.workspace() {
+                        workspace.update(cx, |workspace, cx| workspace.notify_scrolled(cx));
+                    }
                 }
                 EditorEvent::Edited { .. } => {
                     let vim_mode = vim_mode_setting::VimModeSetting::try_get(cx)

@@ -644,6 +644,12 @@ impl TerminalView {
         cx.notify();
     }
 
+    fn notify_workspace_scrolled(&self, cx: &mut Context<Self>) {
+        if let Some(workspace) = self.workspace.upgrade() {
+            workspace.update(cx, |workspace, cx| workspace.notify_scrolled(cx));
+        }
+    }
+
     fn max_scroll_top(&self, cx: &App) -> Pixels {
         let terminal = self.terminal.read(cx);
 
@@ -676,6 +682,7 @@ impl TerminalView {
                     cmp::min(self.scroll_top - y_delta, self.max_scroll_top(cx)),
                 );
                 cx.notify();
+                self.notify_workspace_scrolled(cx);
                 return;
             }
         }
@@ -685,6 +692,7 @@ impl TerminalView {
                 TerminalSettings::get_global(cx).scroll_multiplier.max(0.01),
             )
         });
+        self.notify_workspace_scrolled(cx);
     }
 
     fn scroll_line_up(&mut self, _: &ScrollLineUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -695,11 +703,13 @@ impl TerminalView {
         {
             let line_height = terminal_content.terminal_bounds.line_height;
             self.scroll_top = cmp::max(self.scroll_top - line_height, Pixels::ZERO);
+            self.notify_workspace_scrolled(cx);
             return;
         }
 
         self.terminal.update(cx, |term, _| term.scroll_line_up());
         cx.notify();
+        self.notify_workspace_scrolled(cx);
     }
 
     fn scroll_line_down(&mut self, _: &ScrollLineDown, _: &mut Window, cx: &mut Context<Self>) {
@@ -710,11 +720,13 @@ impl TerminalView {
                 let line_height = terminal_content.terminal_bounds.line_height;
                 self.scroll_top = cmp::min(self.scroll_top + line_height, max_scroll_top);
             }
+            self.notify_workspace_scrolled(cx);
             return;
         }
 
         self.terminal.update(cx, |term, _| term.scroll_line_down());
         cx.notify();
+        self.notify_workspace_scrolled(cx);
     }
 
     fn scroll_page_up(&mut self, _: &ScrollPageUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -740,6 +752,7 @@ impl TerminalView {
             }
         }
         cx.notify();
+        self.notify_workspace_scrolled(cx);
     }
 
     fn scroll_page_down(&mut self, _: &ScrollPageDown, _: &mut Window, cx: &mut Context<Self>) {
@@ -749,11 +762,13 @@ impl TerminalView {
             self.scroll_top = self.max_scroll_top(cx);
         }
         cx.notify();
+        self.notify_workspace_scrolled(cx);
     }
 
     fn scroll_to_top(&mut self, _: &ScrollToTop, _: &mut Window, cx: &mut Context<Self>) {
         self.terminal.update(cx, |term, _| term.scroll_to_top());
         cx.notify();
+        self.notify_workspace_scrolled(cx);
     }
 
     fn scroll_to_bottom(&mut self, _: &ScrollToBottom, _: &mut Window, cx: &mut Context<Self>) {
@@ -762,6 +777,7 @@ impl TerminalView {
             self.scroll_top = self.max_scroll_top(cx);
         }
         cx.notify();
+        self.notify_workspace_scrolled(cx);
     }
 
     fn toggle_vi_mode(&mut self, _: &ToggleViMode, _: &mut Window, cx: &mut Context<Self>) {

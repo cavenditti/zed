@@ -56,6 +56,7 @@ use ui::{
 use util::{RangeExt, ResultExt, TryFutureExt, debug_panic, rel_path::RelPath};
 use workspace::{
     OpenInTerminal, WeakItemHandle, Workspace,
+    codon_jump_clickable::{JumpClickableExt, JumpListenerExt},
     dock::{DockPosition, Panel, PanelEvent},
     item::ItemHandle,
     searchable::{SearchEvent, SearchableItem},
@@ -4771,6 +4772,12 @@ impl OutlinePanel {
                                         editor.set_text("", window, cx);
                                     });
                                     cx.notify();
+                                }))
+                                .jump_target(cx.jump_listener(|outline_panel, window, cx| {
+                                    outline_panel.filter_editor.update(cx, |editor, cx| {
+                                        editor.set_text("", window, cx);
+                                    });
+                                    cx.notify();
                                 })),
                         )
                     })
@@ -4779,6 +4786,13 @@ impl OutlinePanel {
                             .tooltip(Tooltip::text(icon_tooltip))
                             .shape(IconButtonShape::Square)
                             .on_click(cx.listener(|outline_panel, _, window, cx| {
+                                outline_panel.toggle_active_editor_pin(
+                                    &ToggleActiveEditorPin,
+                                    window,
+                                    cx,
+                                );
+                            }))
+                            .jump_target(cx.jump_listener(|outline_panel, window, cx| {
                                 outline_panel.toggle_active_editor_pin(
                                     &ToggleActiveEditorPin,
                                     window,

@@ -97,17 +97,23 @@ impl Render for StatusToast {
             .when_some(self.icon.clone(), |this, icon| this.child(icon))
             .child(Label::new(self.text.clone()).color(Color::Default))
             .when_some(self.action.as_ref(), |this, action| {
-                this.child(
-                    Button::new(action.id.clone(), action.label.clone())
-                        .tooltip(Tooltip::for_action_title(
-                            action.label.clone(),
-                            &toast::RunAction,
-                        ))
-                        .color(Color::Muted)
-                        .when_some(action.on_click.clone(), |el, handler| {
-                            el.on_click(move |_click_event, window, cx| handler(window, cx))
-                        }),
-                )
+                let button = Button::new(action.id.clone(), action.label.clone())
+                    .tooltip(Tooltip::for_action_title(
+                        action.label.clone(),
+                        &toast::RunAction,
+                    ))
+                    .color(Color::Muted)
+                    .when_some(action.on_click.clone(), |el, handler| {
+                        el.on_click(move |_click_event, window, cx| handler(window, cx))
+                    });
+                if let Some(handler) = action.on_click.clone() {
+                    this.child(workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                        button,
+                        move |window, cx| handler(window, cx),
+                    ))
+                } else {
+                    this.child(button)
+                }
             })
             .when(self.show_dismiss, |this| {
                 let handle = self.this_handle.clone();

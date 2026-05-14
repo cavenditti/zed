@@ -25,7 +25,7 @@ use gpui::{
 /// overlay can invoke it without consuming the registry entry. `Send`
 /// matches the bound on `codon_jump::JumpCandidate::action` so the
 /// overlay can wrap us directly without bridging trait objects.
-pub type ClickableAction = Arc<dyn Fn(&mut Window, &mut App) + Send + 'static>;
+pub type ClickableAction = Arc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 thread_local! {
     static CLICKABLE_REGISTRY: RefCell<Vec<ClickableEntry>> = const { RefCell::new(Vec::new()) };
@@ -99,12 +99,12 @@ fn push_clickable(entry: ClickableEntry) {
 /// overlay:
 ///
 /// ```ignore
-/// use workspace::codon_jump_clickable::JumpClickableExt;
+/// use workspace::codon_jump_clickable::{JumpClickableExt, JumpListenerExt};
 ///
 /// h_flex()
 ///     .child("Tabs")
 ///     .on_click(cx.listener(|this, _, w, cx| this.activate(w, cx)))
-///     .jump_target(cx.listener(|this, _, w, cx| this.activate(w, cx)));
+///     .jump_target(cx.jump_listener(|this, w, cx| this.activate(w, cx)));
 /// ```
 ///
 /// `on_click` here should mirror the element's existing `on_click` —
@@ -113,7 +113,7 @@ fn push_clickable(entry: ClickableEntry) {
 pub trait JumpClickableExt: IntoElement + Sized {
     fn jump_target<F>(self, on_click: F) -> JumpClickable<Self::Element>
     where
-        F: Fn(&mut Window, &mut App) + Send + 'static,
+        F: Fn(&mut Window, &mut App) + 'static,
     {
         JumpClickable {
             inner: self.into_element(),
@@ -123,6 +123,29 @@ pub trait JumpClickableExt: IntoElement + Sized {
 }
 
 impl<E: IntoElement> JumpClickableExt for E {}
+
+/// Mirror of `Context<T>::listener` for the `jump_target` shape. The
+/// overlay's stored action takes `(window, cx)` — no event — so the
+/// standard `cx.listener(|this, _, w, cx| ...)` closure has the wrong
+/// arity. `jump_listener` strips the event slot and keeps the same
+/// weak-update plumbing.
+pub trait JumpListenerExt<T: 'static> {
+    fn jump_listener<F>(&self, f: F) -> Box<dyn Fn(&mut Window, &mut App) + 'static>
+    where
+        F: Fn(&mut T, &mut Window, &mut gpui::Context<T>) + 'static;
+}
+
+impl<T: 'static> JumpListenerExt<T> for gpui::Context<'_, T> {
+    fn jump_listener<F>(&self, f: F) -> Box<dyn Fn(&mut Window, &mut App) + 'static>
+    where
+        F: Fn(&mut T, &mut Window, &mut gpui::Context<T>) + 'static,
+    {
+        let weak = self.entity().downgrade();
+        Box::new(move |window, cx| {
+            weak.update(cx, |this, cx| f(this, window, cx)).ok();
+        })
+    }
+}
 
 /// Element wrapper that registers its paint-time bounds into
 /// [`CLICKABLE_REGISTRY`]. Composes transparently: request_layout /

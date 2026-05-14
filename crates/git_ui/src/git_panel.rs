@@ -81,6 +81,7 @@ use util::{ResultExt, TryFutureExt, maybe, rel_path::RelPath};
 use workspace::SERIALIZATION_THROTTLE_TIME;
 use workspace::{
     Workspace,
+    codon_jump_clickable::{JumpClickableExt, JumpListenerExt},
     dock::{DockPosition, Panel, PanelEvent},
     notifications::{DetachAndPromptErr, ErrorMessagePrompt, NotificationId, NotifyResultExt},
 };
@@ -4119,6 +4120,10 @@ impl GitPanel {
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.generate_commit_message_task.take();
                                 cx.notify();
+                            }))
+                            .jump_target(cx.jump_listener(|this, _window, cx| {
+                                this.generate_commit_message_task.take();
+                                cx.notify();
                             })),
                     )
                     .child(
@@ -4162,6 +4167,9 @@ impl GitPanel {
                 })
                 .disabled(!can_commit || has_commit_model_configuration_error)
                 .on_click(cx.listener(move |this, _event, _window, cx| {
+                    this.generate_commit_message(cx);
+                }))
+                .jump_target(cx.jump_listener(move |this, _window, cx| {
                     this.generate_commit_message(cx);
                 }))
                 .into_any_element(),
@@ -4398,6 +4406,11 @@ impl GitPanel {
                             cx.defer(|cx| {
                                 cx.dispatch_action(&Diff);
                             })
+                        })
+                        .jump_target(|_window, cx| {
+                            cx.defer(|cx| {
+                                cx.dispatch_action(&Diff);
+                            })
                         }),
                 )
                 .child(
@@ -4415,6 +4428,16 @@ impl GitPanel {
                                 .on_click({
                                     let git_panel = cx.weak_entity();
                                     move |_, _, cx| {
+                                        git_panel
+                                            .update(cx, |git_panel, cx| {
+                                                git_panel.change_all_files_stage(stage, cx);
+                                            })
+                                            .ok();
+                                    }
+                                })
+                                .jump_target({
+                                    let git_panel = cx.weak_entity();
+                                    move |_window, cx| {
                                         git_panel
                                             .update(cx, |git_panel, cx| {
                                                 git_panel.change_all_files_stage(stage, cx);
@@ -4610,7 +4633,13 @@ impl GitPanel {
                                                 cx,
                                             )
                                         }
-                                    })),
+                                    }))
+                                    .jump_target(|window, cx| {
+                                        window.dispatch_action(
+                                            git::ExpandCommitEditor.boxed_clone(),
+                                            cx,
+                                        )
+                                    }),
                             )
                             .child({
                                 let (icon, label) = if self.commit_editor_expanded {
@@ -4640,6 +4669,12 @@ impl GitPanel {
                                             )
                                         }
                                     }))
+                                    .jump_target(|window, cx| {
+                                        window.dispatch_action(
+                                            git::ToggleFillCommitEditor.boxed_clone(),
+                                            cx,
+                                        )
+                                    })
                             }),
                     ),
             );
@@ -4750,7 +4785,10 @@ impl GitPanel {
             .child(
                 panel_button("Cancel")
                     .size(ButtonSize::Default)
-                    .on_click(cx.listener(|this, _, _, cx| this.set_amend_pending(false, cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.set_amend_pending(false, cx)))
+                    .jump_target(cx.jump_listener(|this, _, cx| {
+                        this.set_amend_pending(false, cx)
+                    })),
             )
     }
 
@@ -4801,6 +4839,7 @@ impl GitPanel {
                             }
                         })
                         .hoverable_tooltip({
+                            let commit = commit.clone();
                             let repo = active_repository.clone();
                             move |window, cx| {
                                 GitPanelMessageTooltip::new(
@@ -4811,6 +4850,22 @@ impl GitPanel {
                                     cx,
                                 )
                                 .into()
+                            }
+                        })
+                        .jump_target({
+                            let commit = commit.clone();
+                            let repo = active_repository.downgrade();
+                            let workspace = self.workspace.clone();
+                            move |window, cx| {
+                                CommitView::open(
+                                    commit.sha.to_string(),
+                                    repo.clone(),
+                                    workspace.clone(),
+                                    None,
+                                    None,
+                                    window,
+                                    cx,
+                                );
                             }
                         }),
                 )
@@ -4838,7 +4893,10 @@ impl GitPanel {
                                         cx.listener(|this, _, window, cx| {
                                             this.uncommit(window, cx)
                                         }),
-                                    ),
+                                    )
+                                    .jump_target(cx.jump_listener(|this, window, cx| {
+                                        this.uncommit(window, cx)
+                                    })),
                             )
                         })
                         .child(
@@ -4848,6 +4906,9 @@ impl GitPanel {
                                     Tooltip::for_action("Open Git Graph", &Open, cx)
                                 })
                                 .on_click(|_, window, cx| {
+                                    window.dispatch_action(Open.boxed_clone(), cx)
+                                })
+                                .jump_target(|window, cx| {
                                     window.dispatch_action(Open.boxed_clone(), cx)
                                 }),
                         ),
@@ -4892,6 +4953,11 @@ impl GitPanel {
                         )
                     })
                     .on_click(move |_, _, cx| {
+                        cx.defer(move |cx| {
+                            cx.dispatch_action(&BranchDiff);
+                        })
+                    })
+                    .jump_target(move |_window, cx| {
                         cx.defer(move |cx| {
                             cx.dispatch_action(&BranchDiff);
                         })
@@ -4947,12 +5013,16 @@ impl GitPanel {
                         this.add_safe_directory(window, cx);
                     })
                 )
+                .jump_target(cx.jump_listener(|this, window, cx| {
+                    this.add_safe_directory(window, cx);
+                }))
         )
         .child(
             panel_filled_button("Learn More")
                 .end_icon(Icon::new(IconName::Link).size(IconSize::Small))
                 .tooltip(Tooltip::text("Open https://git-scm.com/docs/git-config#Documentation/git-config.txt-safedirectory in your default browser"))
                 .on_click(move |_, _, cx| cx.open_url("https://git-scm.com/docs/git-config#Documentation/git-config.txt-safedirectory"))
+                .jump_target(move |_window, cx| cx.open_url("https://git-scm.com/docs/git-config#Documentation/git-config.txt-safedirectory"))
         )
     }
 
@@ -4972,6 +5042,11 @@ impl GitPanel {
                         &self.focus_handle,
                     ))
                     .on_click(move |_, _, cx| {
+                        cx.defer(move |cx| {
+                            cx.dispatch_action(&git::Init);
+                        })
+                    })
+                    .jump_target(move |_window, cx| {
                         cx.defer(move |cx| {
                             cx.dispatch_action(&git::Init);
                         })
@@ -5265,6 +5340,22 @@ impl GitPanel {
                     cx.stop_propagation();
                 })
                 .ok();
+            })
+            .jump_target({
+                let weak = cx.weak_entity();
+                move |window, cx| {
+                    if !has_write_access {
+                        return;
+                    }
+                    weak.update(cx, |this, cx| {
+                        this.toggle_staged_for_entry(
+                            &GitListEntry::Header(GitHeaderEntry { header: section }),
+                            window,
+                            cx,
+                        );
+                    })
+                    .ok();
+                }
             })
             .into_any_element()
     }
@@ -5619,6 +5710,11 @@ impl GitPanel {
                     cx.stop_propagation();
                 },
             )
+            .jump_target(cx.jump_listener(move |this, window, cx| {
+                this.selected_entry = Some(ix);
+                this.open_diff(&Default::default(), window, cx);
+                this.focus_handle.focus(window, cx);
+            }))
             .into_any_element()
     }
 
@@ -5773,6 +5869,13 @@ impl GitPanel {
             .on_click({
                 let key = entry.key.clone();
                 cx.listener(move |this, _event: &ClickEvent, window, cx| {
+                    this.selected_entry = Some(ix);
+                    this.toggle_directory(&key, window, cx);
+                })
+            })
+            .jump_target({
+                let key = entry.key.clone();
+                cx.jump_listener(move |this, window, cx| {
                     this.selected_entry = Some(ix);
                     this.toggle_directory(&key, window, cx);
                 })

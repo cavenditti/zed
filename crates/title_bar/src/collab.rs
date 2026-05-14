@@ -212,36 +212,53 @@ impl TitleBar {
                             cx,
                         )?;
 
+                        let collab_peer_id = collaborator.peer_id;
                         Some(
-                            v_flex()
-                                .id(("collaborator", collaborator.user.id))
-                                .child(facepile)
-                                .child(render_color_ribbon(player_color.cursor))
-                                .cursor_pointer()
-                                .on_mouse_down(MouseButton::Left, |_, window, _| {
-                                    window.prevent_default()
-                                })
-                                .on_click({
-                                    let peer_id = collaborator.peer_id;
-                                    cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
+                            workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                                v_flex()
+                                    .id(("collaborator", collaborator.user.id))
+                                    .child(facepile)
+                                    .child(render_color_ribbon(player_color.cursor))
+                                    .cursor_pointer()
+                                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                        window.prevent_default()
+                                    })
+                                    .on_click({
+                                        let peer_id = collab_peer_id;
+                                        cx.listener(move |this, _, window, cx| {
+                                            cx.stop_propagation();
 
+                                            this.workspace
+                                                .update(cx, |workspace, cx| {
+                                                    if is_following {
+                                                        workspace.unfollow(peer_id, window, cx);
+                                                    } else {
+                                                        workspace.follow(peer_id, window, cx);
+                                                    }
+                                                })
+                                                .ok();
+                                        })
+                                    })
+                                    .occlude()
+                                    .tooltip({
+                                        let login = collaborator.user.github_login.clone();
+                                        Tooltip::text(format!("Follow {login}"))
+                                    }),
+                                workspace::codon_jump_clickable::JumpListenerExt::jump_listener(
+                                    cx,
+                                    move |this, window, cx| {
                                         this.workspace
                                             .update(cx, |workspace, cx| {
                                                 if is_following {
-                                                    workspace.unfollow(peer_id, window, cx);
+                                                    workspace.unfollow(collab_peer_id, window, cx);
                                                 } else {
-                                                    workspace.follow(peer_id, window, cx);
+                                                    workspace.follow(collab_peer_id, window, cx);
                                                 }
                                             })
                                             .ok();
-                                    })
-                                })
-                                .occlude()
-                                .tooltip({
-                                    let login = collaborator.user.github_login.clone();
-                                    Tooltip::text(format!("Follow {login}"))
-                                }),
+                                    },
+                                ),
+                            ),
                         )
                     }))
                 },
@@ -389,7 +406,7 @@ impl TitleBar {
         children.push(
             h_flex()
                 .gap_1()
-                .child(
+                .child(workspace::codon_jump_clickable::JumpClickableExt::jump_target(
                     IconButton::new("leave-call", IconName::Exit)
                         .style(ButtonStyle::Subtle)
                         .tooltip(Tooltip::text("Leave Call"))
@@ -399,38 +416,48 @@ impl TitleBar {
                                 .update(cx, |call, cx| call.hang_up(cx))
                                 .detach_and_log_err(cx);
                         }),
-                )
+                    |_window, cx| {
+                        ActiveCall::global(cx)
+                            .update(cx, |call, cx| call.hang_up(cx))
+                            .detach_and_log_err(cx);
+                    },
+                ))
                 .child(Divider::vertical().color(DividerColor::Border))
                 .into_any_element(),
         );
 
         children.push(
-            IconButton::new("call-quality", signal_icon)
-                .icon_size(IconSize::Small)
-                .when_some(signal_color, |button, color| button.icon_color(color))
-                .tooltip(move |_window, cx| {
-                    let quality_label = quality_label.clone();
-                    let latency = format_stat(stats.latency_ms, |v| format!("{:.0}ms", v));
-                    let jitter = format_stat(stats.jitter_ms, |v| format!("{:.0}ms", v));
-                    let packet_loss = format_stat(stats.packet_loss_pct, |v| format!("{:.1}%", v));
-                    let input_lag =
-                        format_stat(stats.input_lag.map(|d| d.as_secs_f64() * 1000.0), |v| {
-                            format!("{:.1}ms", v)
-                        });
+            workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                IconButton::new("call-quality", signal_icon)
+                    .icon_size(IconSize::Small)
+                    .when_some(signal_color, |button, color| button.icon_color(color))
+                    .tooltip(move |_window, cx| {
+                        let quality_label = quality_label.clone();
+                        let latency = format_stat(stats.latency_ms, |v| format!("{:.0}ms", v));
+                        let jitter = format_stat(stats.jitter_ms, |v| format!("{:.0}ms", v));
+                        let packet_loss = format_stat(stats.packet_loss_pct, |v| format!("{:.1}%", v));
+                        let input_lag =
+                            format_stat(stats.input_lag.map(|d| d.as_secs_f64() * 1000.0), |v| {
+                                format!("{:.1}ms", v)
+                            });
 
-                    Tooltip::with_meta(
-                        format!("Connection: {quality_label}"),
-                        Some(&ShowCallStats),
-                        format!(
-                            "Latency: {latency} · Jitter: {jitter} · Loss: {packet_loss} · Input lag: {input_lag}",
-                        ),
-                        cx,
-                    )
-                })
-                .on_click(move |_, window, cx| {
+                        Tooltip::with_meta(
+                            format!("Connection: {quality_label}"),
+                            Some(&ShowCallStats),
+                            format!(
+                                "Latency: {latency} · Jitter: {jitter} · Loss: {packet_loss} · Input lag: {input_lag}",
+                            ),
+                            cx,
+                        )
+                    })
+                    .on_click(move |_, window, cx| {
+                        window.dispatch_action(Box::new(ShowCallStats), cx);
+                    }),
+                |window, cx| {
                     window.dispatch_action(Box::new(ShowCallStats), cx);
-                })
-                .into_any_element(),
+                },
+            )
+            .into_any_element(),
         );
 
         if is_local && can_share_projects && !is_connecting_to_project {
@@ -448,104 +475,126 @@ impl TitleBar {
                 proto::ChannelVisibility::Members => false,
             });
 
-            children.push(
-                Button::new(
-                    "toggle_sharing",
-                    if is_shared { "Unshare" } else { "Share" },
-                )
-                .tooltip(Tooltip::text(if is_shared {
-                    "Stop sharing project with call participants"
+            let share_button = Button::new(
+                "toggle_sharing",
+                if is_shared { "Unshare" } else { "Share" },
+            )
+            .tooltip(Tooltip::text(if is_shared {
+                "Stop sharing project with call participants"
+            } else {
+                "Share project with call participants"
+            }))
+            .style(ButtonStyle::Subtle)
+            .selected_style(ButtonStyle::Tinted(TintColor::Accent))
+            .toggle_state(is_shared)
+            .label_size(LabelSize::Small)
+            .when(is_sharing_disabled, |parent| {
+                parent.disabled(true).tooltip(Tooltip::text(
+                    "This project may not be shared in a public channel.",
+                ))
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if is_shared {
+                    this.unshare_project(window, cx);
                 } else {
-                    "Share project with call participants"
-                }))
-                .style(ButtonStyle::Subtle)
-                .selected_style(ButtonStyle::Tinted(TintColor::Accent))
-                .toggle_state(is_shared)
-                .label_size(LabelSize::Small)
-                .when(is_sharing_disabled, |parent| {
-                    parent.disabled(true).tooltip(Tooltip::text(
-                        "This project may not be shared in a public channel.",
-                    ))
-                })
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    if is_shared {
-                        this.unshare_project(window, cx);
-                    } else {
-                        this.share_project(cx);
-                    }
-                }))
-                .into_any_element(),
-            );
+                    this.share_project(cx);
+                }
+            }));
+            let share_button: AnyElement = if is_sharing_disabled {
+                share_button.into_any_element()
+            } else {
+                workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                    share_button,
+                    workspace::codon_jump_clickable::JumpListenerExt::jump_listener(
+                        cx,
+                        move |this, window, cx| {
+                            if is_shared {
+                                this.unshare_project(window, cx);
+                            } else {
+                                this.share_project(cx);
+                            }
+                        },
+                    ),
+                )
+                .into_any_element()
+            };
+            children.push(share_button);
         }
 
         if can_use_microphone {
             children.push(
-                IconButton::new(
-                    "mute-microphone",
-                    if is_muted {
-                        IconName::MicMute
-                    } else {
-                        IconName::Mic
-                    },
-                )
-                .tooltip(move |_window, cx| {
-                    if is_muted {
-                        if is_deafened {
-                            Tooltip::with_meta(
-                                "Unmute Microphone",
-                                None,
-                                "Audio will be unmuted",
-                                cx,
-                            )
+                workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                    IconButton::new(
+                        "mute-microphone",
+                        if is_muted {
+                            IconName::MicMute
                         } else {
-                            Tooltip::simple("Unmute Microphone", cx)
+                            IconName::Mic
+                        },
+                    )
+                    .tooltip(move |_window, cx| {
+                        if is_muted {
+                            if is_deafened {
+                                Tooltip::with_meta(
+                                    "Unmute Microphone",
+                                    None,
+                                    "Audio will be unmuted",
+                                    cx,
+                                )
+                            } else {
+                                Tooltip::simple("Unmute Microphone", cx)
+                            }
+                        } else {
+                            Tooltip::simple("Mute Microphone", cx)
                         }
-                    } else {
-                        Tooltip::simple("Mute Microphone", cx)
-                    }
-                })
-                .style(ButtonStyle::Subtle)
-                .icon_size(IconSize::Small)
-                .toggle_state(is_muted)
-                .selected_style(ButtonStyle::Tinted(TintColor::Error))
-                .on_click(move |_, _window, cx| toggle_mute(cx))
+                    })
+                    .style(ButtonStyle::Subtle)
+                    .icon_size(IconSize::Small)
+                    .toggle_state(is_muted)
+                    .selected_style(ButtonStyle::Tinted(TintColor::Error))
+                    .on_click(move |_, _window, cx| toggle_mute(cx)),
+                    |_window, cx| toggle_mute(cx),
+                )
                 .into_any_element(),
             );
         }
 
         children.push(
-            IconButton::new(
-                "mute-sound",
-                if is_deafened {
-                    IconName::AudioOff
-                } else {
-                    IconName::AudioOn
-                },
+            workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                IconButton::new(
+                    "mute-sound",
+                    if is_deafened {
+                        IconName::AudioOff
+                    } else {
+                        IconName::AudioOn
+                    },
+                )
+                .style(ButtonStyle::Subtle)
+                .selected_style(ButtonStyle::Tinted(TintColor::Error))
+                .icon_size(IconSize::Small)
+                .toggle_state(is_deafened)
+                .tooltip(move |_window, cx| {
+                    if is_deafened {
+                        let label = "Unmute Audio";
+
+                        if !muted_by_user {
+                            Tooltip::with_meta(label, None, "Microphone will be unmuted", cx)
+                        } else {
+                            Tooltip::simple(label, cx)
+                        }
+                    } else {
+                        let label = "Mute Audio";
+
+                        if !muted_by_user {
+                            Tooltip::with_meta(label, None, "Microphone will be muted", cx)
+                        } else {
+                            Tooltip::simple(label, cx)
+                        }
+                    }
+                })
+                .on_click(move |_, _, cx| toggle_deafen(cx)),
+                |_window, cx| toggle_deafen(cx),
             )
-            .style(ButtonStyle::Subtle)
-            .selected_style(ButtonStyle::Tinted(TintColor::Error))
-            .icon_size(IconSize::Small)
-            .toggle_state(is_deafened)
-            .tooltip(move |_window, cx| {
-                if is_deafened {
-                    let label = "Unmute Audio";
-
-                    if !muted_by_user {
-                        Tooltip::with_meta(label, None, "Microphone will be unmuted", cx)
-                    } else {
-                        Tooltip::simple(label, cx)
-                    }
-                } else {
-                    let label = "Mute Audio";
-
-                    if !muted_by_user {
-                        Tooltip::with_meta(label, None, "Microphone will be muted", cx)
-                    } else {
-                        Tooltip::simple(label, cx)
-                    }
-                }
-            })
-            .on_click(move |_, _, cx| toggle_deafen(cx))
             .into_any_element(),
         );
 
