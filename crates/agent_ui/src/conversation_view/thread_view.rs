@@ -2759,14 +2759,24 @@ impl ThreadView {
             .child(Disclosure::new("plan_disclosure", plan_expanded))
             .child(title.flex_1())
             .child(
-                IconButton::new("dismiss-plan", IconName::Close)
-                    .icon_size(IconSize::XSmall)
-                    .shape(ui::IconButtonShape::Square)
-                    .tooltip(Tooltip::text("Clear Plan"))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.thread.update(cx, |thread, cx| thread.clear_plan(cx));
-                        cx.stop_propagation();
-                    })),
+                workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                    IconButton::new("dismiss-plan", IconName::Close)
+                        .icon_size(IconSize::XSmall)
+                        .shape(ui::IconButtonShape::Square)
+                        .tooltip(Tooltip::text("Clear Plan"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.thread.update(cx, |thread, cx| thread.clear_plan(cx));
+                            cx.stop_propagation();
+                        })),
+                    {
+                        let thread = self.thread.downgrade();
+                        move |_window, cx| {
+                            if let Some(thread) = thread.upgrade() {
+                                thread.update(cx, |thread, cx| thread.clear_plan(cx));
+                            }
+                        }
+                    },
+                ),
             )
             .on_click(cx.listener(|this, _, _, cx| {
                 this.plan_expanded = !this.plan_expanded;

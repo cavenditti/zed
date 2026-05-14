@@ -4180,34 +4180,44 @@ impl GitPanel {
         if potential_co_authors.is_empty() {
             None
         } else {
-            Some(
-                IconButton::new("co-authors", icon)
-                    .shape(ui::IconButtonShape::Square)
-                    .icon_color(Color::Disabled)
-                    .selected_icon_color(Color::Selected)
-                    .toggle_state(self.add_coauthors)
-                    .tooltip(move |_, cx| {
-                        let title = format!(
-                            "{}:{}{}",
-                            tooltip_label,
-                            if potential_co_authors.len() == 1 {
-                                ""
-                            } else {
-                                "\n"
-                            },
-                            potential_co_authors
-                                .iter()
-                                .map(|(name, email)| format!(" {} <{}>", name, email))
-                                .join("\n")
-                        );
-                        Tooltip::simple(title, cx)
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.add_coauthors = !this.add_coauthors;
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            )
+            let panel = cx.entity().downgrade();
+            let button = IconButton::new("co-authors", icon)
+                .shape(ui::IconButtonShape::Square)
+                .icon_color(Color::Disabled)
+                .selected_icon_color(Color::Selected)
+                .toggle_state(self.add_coauthors)
+                .tooltip(move |_, cx| {
+                    let title = format!(
+                        "{}:{}{}",
+                        tooltip_label,
+                        if potential_co_authors.len() == 1 {
+                            ""
+                        } else {
+                            "\n"
+                        },
+                        potential_co_authors
+                            .iter()
+                            .map(|(name, email)| format!(" {} <{}>", name, email))
+                            .join("\n")
+                    );
+                    Tooltip::simple(title, cx)
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.add_coauthors = !this.add_coauthors;
+                    cx.notify();
+                }));
+            let button = workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                button,
+                move |_window, cx| {
+                    if let Some(panel) = panel.upgrade() {
+                        panel.update(cx, |panel, cx| {
+                            panel.add_coauthors = !panel.add_coauthors;
+                            cx.notify();
+                        });
+                    }
+                },
+            );
+            Some(button.into_any_element())
         }
     }
 

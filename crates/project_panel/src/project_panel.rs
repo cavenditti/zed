@@ -7156,23 +7156,28 @@ impl Render for ProjectPanel {
                 .gap_1()
                 .track_focus(&self.focus_handle(cx))
                 .child(
-                    Button::new("open_project", "Open Project")
-                        .full_width()
-                        .key_binding(KeyBinding::for_action_in(
-                            &workspace::Open::default(),
-                            &focus_handle,
-                            cx,
-                        ))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.workspace
-                                .update(cx, |_, cx| {
-                                    window.dispatch_action(
-                                        workspace::Open::default().boxed_clone(),
-                                        cx,
-                                    );
-                                })
-                                .log_err();
-                        })),
+                    workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                        Button::new("open_project", "Open Project")
+                            .full_width()
+                            .key_binding(KeyBinding::for_action_in(
+                                &workspace::Open::default(),
+                                &focus_handle,
+                                cx,
+                            ))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.workspace
+                                    .update(cx, |_, cx| {
+                                        window.dispatch_action(
+                                            workspace::Open::default().boxed_clone(),
+                                            cx,
+                                        );
+                                    })
+                                    .log_err();
+                            })),
+                        move |window, cx| {
+                            window.dispatch_action(workspace::Open::default().boxed_clone(), cx);
+                        },
+                    ),
                 )
                 .child(
                     h_flex()
@@ -7183,15 +7188,20 @@ impl Render for ProjectPanel {
                         .child(Divider::horizontal()),
                 )
                 .child(
-                    Button::new("clone_repo", "Clone Repository")
-                        .full_width()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.workspace
-                                .update(cx, |_, cx| {
-                                    window.dispatch_action(git::Clone.boxed_clone(), cx);
-                                })
-                                .log_err();
-                        })),
+                    workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                        Button::new("clone_repo", "Clone Repository")
+                            .full_width()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.workspace
+                                    .update(cx, |_, cx| {
+                                        window.dispatch_action(git::Clone.boxed_clone(), cx);
+                                    })
+                                    .log_err();
+                            })),
+                        move |window, cx| {
+                            window.dispatch_action(git::Clone.boxed_clone(), cx);
+                        },
+                    ),
                 )
                 .when(is_local, |div| {
                     div.when(panel_settings.drag_and_drop, |div| {
