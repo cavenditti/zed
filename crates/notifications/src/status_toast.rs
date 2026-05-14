@@ -111,18 +111,27 @@ impl Render for StatusToast {
             })
             .when(self.show_dismiss, |this| {
                 let handle = self.this_handle.clone();
-                this.child(
-                    IconButton::new("dismiss", IconName::Close)
-                        .shape(ui::IconButtonShape::Square)
-                        .icon_size(IconSize::Small)
-                        .icon_color(Color::Muted)
-                        .tooltip(Tooltip::text("Dismiss"))
-                        .on_click(move |_click_event, _window, cx| {
-                            handle.update(cx, |_, cx| {
+                let handle_for_jump = handle.clone();
+                let dismiss_button = IconButton::new("dismiss", IconName::Close)
+                    .shape(ui::IconButtonShape::Square)
+                    .icon_size(IconSize::Small)
+                    .icon_color(Color::Muted)
+                    .tooltip(Tooltip::text("Dismiss"))
+                    .on_click(move |_click_event, _window, cx| {
+                        handle.update(cx, |_, cx| {
+                            cx.emit(DismissEvent);
+                        });
+                    });
+                let dismiss_button =
+                    workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+                        dismiss_button,
+                        move |_window, cx| {
+                            handle_for_jump.update(cx, |_, cx| {
                                 cx.emit(DismissEvent);
                             });
-                        }),
-                )
+                        },
+                    );
+                this.child(dismiss_button)
             })
     }
 }
