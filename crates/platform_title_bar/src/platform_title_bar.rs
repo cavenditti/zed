@@ -25,6 +25,25 @@ pub use system_window_tabs::{
     DraggedWindowTab, MergeAllWindows, MoveTabToNewWindow, ShowNextWindowTab, ShowPreviousWindowTab,
 };
 
+/// Embedder-controlled window chrome behavior. Codon installs this
+/// global from `codon.toml` (`[window]` sub-tree) so the title bar can
+/// suppress mouse-driven drag and double-click-to-zoom without the
+/// embedder having to fork the title-bar renderer.
+///
+/// Defaults are conservative — both flags false — so vanilla Zed
+/// behavior is unchanged when nothing installs the global.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct WindowChromeConfig {
+    pub disable_drag: bool,
+    pub disable_double_click_zoom: bool,
+}
+
+impl gpui::Global for WindowChromeConfig {}
+
+fn window_chrome_config(cx: &App) -> WindowChromeConfig {
+    cx.try_global::<WindowChromeConfig>().copied().unwrap_or_default()
+}
+
 pub struct PlatformTitleBar {
     id: ElementId,
     platform_style: PlatformStyle,
@@ -191,51 +210,65 @@ impl Render for PlatformTitleBar {
 
         let button_layout = self.effective_button_layout(&decorations, cx);
         let sidebar = self.sidebar_render_state(cx);
+        let chrome = window_chrome_config(cx);
 
         let title_bar = h_flex()
-            .window_control_area(WindowControlArea::Drag)
+            // When `disable_drag` is set, drop the control-area marker
+            // so the platform doesn't treat this strip as a drag region
+            // (Linux / Windows CSD honor this). The mouse handlers
+            // below are gated separately for macOS.
+            .when(!chrome.disable_drag, |this| {
+                this.window_control_area(WindowControlArea::Drag)
+            })
             .w_full()
             .h(height)
             .map(|this| {
-                this.on_mouse_down_out(cx.listener(move |this, _ev, _window, _cx| {
-                    this.should_move = false;
-                }))
-                .on_mouse_up(
-                    gpui::MouseButton::Left,
-                    cx.listener(move |this, _ev, _window, _cx| {
+                if chrome.disable_drag {
+                    this
+                } else {
+                    this.on_mouse_down_out(cx.listener(move |this, _ev, _window, _cx| {
                         this.should_move = false;
-                    }),
-                )
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(move |this, _ev, _window, _cx| {
-                        this.should_move = true;
-                    }),
-                )
-                .on_mouse_move(cx.listener(move |this, _ev, window, _| {
-                    if this.should_move {
-                        this.should_move = false;
-                        window.start_window_move();
-                    }
-                }))
+                    }))
+                    .on_mouse_up(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _ev, _window, _cx| {
+                            this.should_move = false;
+                        }),
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _ev, _window, _cx| {
+                            this.should_move = true;
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(move |this, _ev, window, _| {
+                        if this.should_move {
+                            this.should_move = false;
+                            window.start_window_move();
+                        }
+                    }))
+                }
             })
             .map(|this| {
                 // Note: On Windows the title bar behavior is handled by the platform implementation.
-                this.id(self.id.clone())
-                    .when(self.platform_style == PlatformStyle::Mac, |this| {
-                        this.on_click(|event, window, _| {
-                            if event.click_count() == 2 {
-                                window.titlebar_double_click();
-                            }
-                        })
+                let this = this.id(self.id.clone());
+                if chrome.disable_double_click_zoom {
+                    return this;
+                }
+                this.when(self.platform_style == PlatformStyle::Mac, |this| {
+                    this.on_click(|event, window, _| {
+                        if event.click_count() == 2 {
+                            window.titlebar_double_click();
+                        }
                     })
-                    .when(self.platform_style == PlatformStyle::Linux, |this| {
-                        this.on_click(|event, window, _| {
-                            if event.click_count() == 2 {
-                                window.zoom_window();
-                            }
-                        })
+                })
+                .when(self.platform_style == PlatformStyle::Linux, |this| {
+                    this.on_click(|event, window, _| {
+                        if event.click_count() == 2 {
+                            window.zoom_window();
+                        }
                     })
+                })
             })
             .map(|this| {
                 let show_left_controls = !(sidebar.open && sidebar.side == SidebarSide::Left);
