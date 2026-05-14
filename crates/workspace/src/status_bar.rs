@@ -189,6 +189,16 @@ impl StatusBar {
                     }
                 })
             });
+        let toggle = crate::codon_jump_clickable::JumpClickableExt::jump_target(
+            toggle,
+            move |window, cx| {
+                if let Some(multi_workspace) = window.root::<MultiWorkspace>().flatten() {
+                    multi_workspace.update(cx, |multi_workspace, cx| {
+                        multi_workspace.toggle_sidebar(window, cx);
+                    });
+                }
+            },
+        );
 
         h_flex()
             .gap_0p5()

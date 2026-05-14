@@ -661,6 +661,18 @@ impl TitleBar {
                 })
             });
 
+        let workspace = self.workspace.clone();
+        let button = workspace::codon_jump_clickable::JumpClickableExt::jump_target(
+            button,
+            move |window, cx| {
+                workspace
+                    .update(cx, |workspace, cx| {
+                        workspace.show_worktree_trust_security_modal(true, window, cx)
+                    })
+                    .log_err();
+            },
+        );
+
         if cfg!(macos_sdk_26) {
             // Make up for Tahoe's traffic light buttons having less spacing around them
             Some(div().child(button).ml_0p5().into_any_element())

@@ -1320,11 +1320,14 @@ impl Render for PanelButtons {
                         .trigger(move |is_active, _window, _cx| {
                             // Include active state in element ID to invalidate the cached
                             // tooltip when panel state changes (e.g., via keyboard shortcut)
+                            let action_for_jump = action.boxed_clone();
+                            let focus_handle_for_jump = focus_handle.clone();
                             let button = IconButton::new((name, is_active_button as u64), icon)
                                 .icon_size(IconSize::Small)
                                 .toggle_state(is_active_button)
                                 .on_click({
                                     let action = action.boxed_clone();
+                                    let focus_handle = focus_handle.clone();
                                     move |_, window, cx| {
                                         window.focus(&focus_handle, cx);
                                         window.dispatch_action(action.boxed_clone(), cx)
@@ -1335,6 +1338,15 @@ impl Render for PanelButtons {
                                         Tooltip::for_action(tooltip.clone(), &*action, cx)
                                     })
                                 });
+                            let button =
+                                crate::codon_jump_clickable::JumpClickableExt::jump_target(
+                                    button,
+                                    move |window, cx| {
+                                        window.focus(&focus_handle_for_jump, cx);
+                                        window
+                                            .dispatch_action(action_for_jump.boxed_clone(), cx);
+                                    },
+                                );
 
                             div().relative().child(button).when_some(
                                 icon_label

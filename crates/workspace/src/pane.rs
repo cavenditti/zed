@@ -3112,7 +3112,8 @@ impl Pane {
         let menu_context = item.item_focus_handle(cx);
         let item_handle = item.boxed_clone();
 
-        right_click_menu(ix)
+        let activate_pane = cx.entity().downgrade();
+        let tab_element = right_click_menu(ix)
             .trigger(|_, _, _| tab)
             .menu(move |window, cx| {
                 let pane = pane.clone();
@@ -3414,7 +3415,18 @@ impl Pane {
 
                     menu.context(menu_context)
                 })
-            })
+            });
+
+        crate::codon_jump_clickable::JumpClickableExt::jump_target(
+            tab_element,
+            move |window, cx| {
+                if let Some(pane) = activate_pane.upgrade() {
+                    pane.update(cx, |pane, cx| {
+                        pane.activate_item(ix, true, true, window, cx);
+                    });
+                }
+            },
+        )
     }
 
     fn render_tab_bar(&mut self, window: &mut Window, cx: &mut Context<Pane>) -> AnyElement {

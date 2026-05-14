@@ -1,5 +1,6 @@
 pub mod active_file_name;
 pub mod codon_bridge;
+pub mod codon_jump_clickable;
 pub mod dock;
 pub mod history_manager;
 pub mod invalid_item_view;
