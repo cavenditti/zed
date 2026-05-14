@@ -38,6 +38,7 @@ base64.workspace = true
 breadcrumbs.workspace = true
 client.workspace = true
 clock.workspace = true
+codon-jump.workspace = true
 collections.workspace = true
 convert_case.workspace = true
 dap.workspace = true

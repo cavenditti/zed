@@ -44,6 +44,7 @@ pub mod semantic_tokens;
 mod split;
 pub mod split_editor_view;
 
+pub mod codon_jump_provider;
 mod bookmarks;
 #[cfg(test)]
 mod code_completion_tests;
@@ -2802,6 +2803,8 @@ impl Editor {
                 editor.register_buffer(buffer.read(cx).remote_id(), cx);
             }
             editor.report_editor_event(ReportEditorEvent::EditorOpened, None, cx);
+
+            codon_jump_provider::EditorJumpProvider::register(&cx.entity(), cx);
         }
 
         editor
@@ -2988,6 +2991,22 @@ impl Editor {
 
     pub fn last_bounds(&self) -> Option<&Bounds<Pixels>> {
         self.last_bounds.as_ref()
+    }
+
+    /// Codon jump-hint hook: walk the visible viewport, returning every
+    /// word + URL together with its window-absolute pixel bounds. The
+    /// bounds origin is the upper-left corner of the word's first
+    /// grapheme; size is `(em_advance, line_height)`. Returns an empty
+    /// vec until the editor has been painted at least once.
+    ///
+    /// `mode` filters: `JumpMode::Url` skips word candidates; the
+    /// codon-jump registry applies the same filter at a higher level
+    /// but we honour it here too so providers can short-circuit work.
+    pub fn codon_jump_collect(
+        &self,
+        mode: codon_jump::JumpMode,
+    ) -> Vec<codon_jump_provider::ResolvedCandidate> {
+        codon_jump_provider::collect_for_editor(self, mode)
     }
 
     fn accept_edit_prediction_keystroke(
