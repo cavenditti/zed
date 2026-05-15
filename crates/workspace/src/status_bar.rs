@@ -114,15 +114,21 @@ impl Render for StatusBar {
 }
 
 impl StatusBar {
+    // The left zone is `flex_shrink_0` by design: REQ:codon/status-bar#c-left-protected
+    // requires mode + session + windows to stay fully readable even when the bar
+    // is otherwise overflowing. The centre zone (flex_1, min_w_0) absorbs all
+    // width pressure first; the right zone (flex_shrink, min_w_0) gives up
+    // pixels next, from its leftmost item inward (its items are rendered
+    // `.rev()`-ed so the last-registered ends up leftmost on screen and is the
+    // first to collapse). Mode + session + windows never lose pixels.
     fn render_left_tools(
         &self,
         sidebar: &SidebarStatus,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
+            .flex_shrink_0()
             .gap_1()
-            .min_w_0()
-            .overflow_x_hidden()
             .when(
                 sidebar.show_toggle && !sidebar.open && sidebar.side == SidebarSide::Left,
                 |this| this.child(self.render_sidebar_toggle(sidebar, cx)),
@@ -146,7 +152,8 @@ impl StatusBar {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
-            .flex_shrink_0()
+            .flex_shrink()
+            .min_w_0()
             .gap_1()
             .overflow_x_hidden()
             .children(self.right_items.iter().rev().map(|item| item.to_any()))
