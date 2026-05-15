@@ -5328,12 +5328,26 @@ impl Workspace {
             let Some(bounds) = self.bounding_box_for_pane(&pane) else {
                 continue;
             };
-            let candidate = bounds.center();
+            // Require the candidate to be both past the active pane's edge
+            // along the requested axis AND overlapping along the
+            // perpendicular axis. Without the overlap check, a tall
+            // full-height neighbor whose center happens to sit above the
+            // active pane's top (e.g. a left pane next to an uneven
+            // right-side split) qualifies as "up" and short-circuits the
+            // MRU walk before the truly-above pane is considered.
+            let horizontal_overlap =
+                bounds.right() > active_bounds.left() && bounds.left() < active_bounds.right();
+            let vertical_overlap =
+                bounds.bottom() > active_bounds.top() && bounds.top() < active_bounds.bottom();
             let in_direction = match direction {
-                SplitDirection::Left => candidate.x < active_bounds.left(),
-                SplitDirection::Right => candidate.x > active_bounds.right(),
-                SplitDirection::Up => candidate.y < active_bounds.top(),
-                SplitDirection::Down => candidate.y > active_bounds.bottom(),
+                SplitDirection::Left => bounds.right() <= active_bounds.left() && vertical_overlap,
+                SplitDirection::Right => {
+                    bounds.left() >= active_bounds.right() && vertical_overlap
+                }
+                SplitDirection::Up => bounds.bottom() <= active_bounds.top() && horizontal_overlap,
+                SplitDirection::Down => {
+                    bounds.top() >= active_bounds.bottom() && horizontal_overlap
+                }
             };
             if in_direction {
                 return Some(pane);
