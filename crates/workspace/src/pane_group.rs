@@ -1476,10 +1476,42 @@ mod element {
                         window.set_cursor_style(cursor_style, &handle.hitbox);
                     }
 
-                    window.paint_quad(gpui::fill(
-                        handle.divider_bounds,
-                        cx.theme().colors().pane_group_border,
-                    ));
+                    // tmux-style pane-active-border: highlight the dividers
+                    // immediately adjacent to the active pane. `active_pane_ix`
+                    // is only set when the active pane is a *direct* leaf
+                    // child of this axis — at outer axes we leave the divider
+                    // alone, since a nested-axis child's divider would span
+                    // beyond the active pane's actual bounds.
+                    let highlighted = self
+                        .active_pane_ix
+                        .is_some_and(|active| ix == active || ix + 1 == active);
+
+                    if highlighted {
+                        // Grow to 3px (centered on the original 1px gap so
+                        // it overlaps 1px of each adjacent pane) — the
+                        // colour alone is hard to read on a 1px line.
+                        const HIGHLIGHT_THICKNESS: f32 = 3.0;
+                        let extra = px(HIGHLIGHT_THICKNESS - DIVIDER_SIZE);
+                        let highlight_bounds = Bounds {
+                            origin: handle
+                                .divider_bounds
+                                .origin
+                                .apply_along(self.axis, |o| o - extra / 2.0),
+                            size: handle
+                                .divider_bounds
+                                .size
+                                .apply_along(self.axis, |_| px(HIGHLIGHT_THICKNESS)),
+                        };
+                        window.paint_quad(gpui::fill(
+                            highlight_bounds,
+                            cx.theme().colors().border_focused,
+                        ));
+                    } else {
+                        window.paint_quad(gpui::fill(
+                            handle.divider_bounds,
+                            cx.theme().colors().pane_group_border,
+                        ));
+                    }
 
                     window.on_mouse_event({
                         let dragged_handle = layout.dragged_handle.clone();
