@@ -6,7 +6,7 @@ use crate::{
     invalid_item_view::InvalidItemView,
     item::{
         ActivateOnClose, ClosePosition, Item, ItemBufferKind, ItemHandle, ItemSettings,
-        PreviewTabsSettings, ProjectItemKind, SaveOptions, ShowCloseButton, ShowDiagnostics,
+        PreviewTabsSettings, ProjectItemKind, SaveOptions, ShowDiagnostics,
         TabContentParams, TabTooltipContent, WeakItemHandle,
     },
     move_item,
@@ -2876,7 +2876,6 @@ impl Pane {
 
         let settings = ItemSettings::get_global(cx);
         let close_side = &settings.close_position;
-        let show_close_button = &settings.show_close_button;
         let indicator = render_item_indicator(item.boxed_clone(), cx);
         let tab_tooltip_content = item.tab_tooltip_content(cx);
         let item_id = item.item_id();
@@ -3010,7 +3009,13 @@ impl Pane {
                 let end_slot_action: &'static dyn Action;
                 let end_slot_tooltip_text: &'static str;
                 let end_slot_pane = cx.entity().downgrade();
-                let end_slot = if is_pinned {
+                // Codon is keyboard-first: tabs never show a close "x".
+                // The Pin/unpin button remains because it has no keyboard
+                // equivalent at the moment.
+                if !is_pinned {
+                    return this;
+                }
+                let end_slot = {
                     end_slot_action = &TogglePinTab;
                     end_slot_tooltip_text = "Unpin Tab";
                     IconButton::new("unpin tab", IconName::Pin)
@@ -3021,27 +3026,6 @@ impl Pane {
                         .on_click(cx.listener(move |pane, _, window, cx| {
                             pane.unpin_tab_at(ix, window, cx);
                         }))
-                } else {
-                    end_slot_action = &CloseActiveItem {
-                        save_intent: None,
-                        close_pinned: false,
-                    };
-                    end_slot_tooltip_text = "Close Tab";
-                    match show_close_button {
-                        ShowCloseButton::Always => IconButton::new("close tab", IconName::Close),
-                        ShowCloseButton::Hover => {
-                            IconButton::new("close tab", IconName::Close).visible_on_hover("")
-                        }
-                        ShowCloseButton::Hidden => return this,
-                    }
-                    .shape(IconButtonShape::Square)
-                    .icon_color(Color::Muted)
-                    .size(ButtonSize::None)
-                    .icon_size(IconSize::Small)
-                    .on_click(cx.listener(move |pane, _, window, cx| {
-                        pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
-                            .detach_and_log_err(cx);
-                    }))
                 }
                 .map(|this| {
                     if is_active {
