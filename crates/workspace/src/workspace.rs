@@ -1033,6 +1033,16 @@ impl SerializableItemRegistry {
         cx: &mut Context<Pane>,
     ) -> Task<Result<Box<dyn ItemHandle>>> {
         let Some(descriptor) = Self::descriptor(item_kind, cx) else {
+            // codon fallback: if codon-panes registered a panel restorer
+            // for this kind, run it via an `AsyncWindowContext` so the
+            // panel's own `load()` constructor drives the rehydrate. The
+            // restorer wraps the resulting entity in `PanelItemAdapter`
+            // and returns it as an `ItemHandle`.
+            if let Some(restorer) = crate::codon_bridge::lookup_panel_restorer(item_kind) {
+                let async_cx = window.to_async(cx);
+                let _ = (project, workspace_id, item_item);
+                return restorer(workspace, async_cx);
+            }
             return Task::ready(Err(anyhow!(
                 "cannot deserialize {}, descriptor not found",
                 item_kind
@@ -5631,7 +5641,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.center.remove(&pane, cx).unwrap() {
+        // `PaneGroup::remove` returns `Err("Pane not found")` if the pane is
+        // not in the center tree. This is a valid runtime state in the codon
+        // fork — `codon-session` swaps the center pane tree on window
+        // switching, leaving the pre-swap pane subscriptions live but its
+        // panes no longer reachable through `self.center`. Treat the absent
+        // case the same as `Ok(false)`: there's no center entry to drop,
+        // but we still emit `PaneRemoved` for observers.
+        let removed = self.center.remove(&pane, cx).unwrap_or(false);
+        if removed {
             self.force_remove_pane(&pane, &focus_on, window, cx);
             self.unfollow_in_pane(&pane, window, cx);
             self.last_leaders_by_pane.remove(&pane.downgrade());
