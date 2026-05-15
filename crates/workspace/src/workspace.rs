@@ -1370,6 +1370,12 @@ pub struct Workspace {
     panes_by_item: HashMap<EntityId, WeakEntity<Pane>>,
     active_pane: Entity<Pane>,
     last_active_center_pane: Option<WeakEntity<Pane>>,
+    /// codon: most-recently-focused center panes, front = most recent.
+    /// Used by `find_pane_in_direction_mru` so directional pane
+    /// navigation (`Ctrl-{h,j,k,l}`) returns to the last-focused pane
+    /// on the requested side instead of always picking the geometric
+    /// first hit.
+    center_pane_mru: Vec<WeakEntity<Pane>>,
     last_active_view_id: Option<proto::ViewId>,
     status_bar: Entity<StatusBar>,
     pub(crate) modal_layer: Entity<ModalLayer>,
@@ -1810,6 +1816,7 @@ impl Workspace {
             panes_by_item: Default::default(),
             active_pane: center_pane.clone(),
             last_active_center_pane: Some(center_pane.downgrade()),
+            center_pane_mru: vec![center_pane.downgrade()],
             last_active_view_id: None,
             status_bar,
             modal_layer,
@@ -5103,9 +5110,11 @@ impl Workspace {
             (Origin::Sidebar, _) => None,
 
             // We're in the center, so we first try to go to a different pane,
-            // otherwise try to go to a dock.
+            // otherwise try to go to a dock. Uses the MRU-aware lookup so
+            // returning to a side restores the last-focused pane on that
+            // side rather than the geometric first-hit.
             (Origin::Center, direction) => {
-                if let Some(pane) = self.find_pane_in_direction(direction, cx) {
+                if let Some(pane) = self.find_pane_in_direction_mru(direction, cx) {
                     Some(Target::Pane(pane))
                 } else {
                     match direction {
@@ -5277,6 +5286,62 @@ impl Workspace {
             .cloned()
     }
 
+    /// MRU-aware sibling of `find_pane_in_direction`. Walks the
+    /// center-pane focus history front-to-back and returns the first
+    /// pane that's both still in the center tree and geometrically in
+    /// `direction` from the active pane. Falls back to the purely
+    /// geometric search if the MRU yields nothing — so two-pane and
+    /// fresh-window cases behave identically to upstream Zed.
+    ///
+    /// codon: the user-visible improvement is that going `Ctrl-h`
+    /// (left) then `Ctrl-l` (right) returns to the pane the user just
+    /// left, rather than the geometric first-hit. With a left pane and
+    /// two stacked right panes, this means focus snaps back to the
+    /// right pane that was actually focused, not always the top one.
+    pub fn find_pane_in_direction_mru(
+        &mut self,
+        direction: SplitDirection,
+        cx: &App,
+    ) -> Option<Entity<Pane>> {
+        if let Some(pane) = self.find_pane_in_direction_via_mru(direction, cx) {
+            return Some(pane);
+        }
+        self.find_pane_in_direction(direction, cx)
+    }
+
+    fn find_pane_in_direction_via_mru(
+        &self,
+        direction: SplitDirection,
+        _cx: &App,
+    ) -> Option<Entity<Pane>> {
+        let active_bounds = self.bounding_box_for_pane(&self.active_pane)?;
+        for weak in &self.center_pane_mru {
+            let Some(pane) = weak.upgrade() else {
+                continue;
+            };
+            if pane == self.active_pane {
+                continue;
+            }
+            // `bounding_box_for_pane` only returns Some when the pane is
+            // still attached to the center tree — stale MRU entries are
+            // skipped naturally.
+            let Some(bounds) = self.bounding_box_for_pane(&pane) else {
+                continue;
+            };
+            let candidate = bounds.center();
+            let in_direction = match direction {
+                SplitDirection::Left => candidate.x < active_bounds.left(),
+                SplitDirection::Right => candidate.x > active_bounds.right(),
+                SplitDirection::Up => candidate.y < active_bounds.top(),
+                SplitDirection::Down => candidate.y > active_bounds.bottom(),
+            };
+            if in_direction {
+                return Some(pane);
+            }
+        }
+        None
+    }
+
     pub fn swap_pane_in_direction(&mut self, direction: SplitDirection, cx: &mut Context<Self>) {
         if let Some(to) = self.find_pane_in_direction(direction, cx) {
             self.center.swap(&self.active_pane, &to, cx);
@@ -5347,6 +5412,18 @@ impl Workspace {
 
         if self.last_active_center_pane.is_none() {
             self.last_active_center_pane = Some(pane.downgrade());
+        }
+
+        // codon: track focus history so `find_pane_in_direction_mru` can
+        // return to the last-focused pane on a side. Only track panes
+        // that live in the center tree — terminal-panel host panes and
+        // other off-tree panes shouldn't surface as direction targets.
+        const CENTER_PANE_MRU_CAP: usize = 16;
+        if self.panes.iter().any(|p| p == &pane) {
+            self.center_pane_mru
+                .retain(|weak| weak.upgrade().is_some_and(|p| p != pane));
+            self.center_pane_mru.insert(0, pane.downgrade());
+            self.center_pane_mru.truncate(CENTER_PANE_MRU_CAP);
         }
 
         // If this pane is in a dock, preserve that dock when dismissing zoomed items.

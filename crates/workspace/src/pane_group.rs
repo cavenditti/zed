@@ -928,6 +928,7 @@ impl PaneAxis {
     ) -> PaneRenderResult {
         debug_assert!(self.members.len() == self.flexes.lock().len());
         let mut active_pane_ix = None;
+        let mut active_subtree_ix = None;
         let mut contains_active_pane = false;
         let mut is_leaf_pane = vec![false; self.members.len()];
 
@@ -941,6 +942,7 @@ impl PaneAxis {
                         is_leaf_pane[ix] = true;
                         if pane == render_cx.active_pane() {
                             active_pane_ix = Some(ix);
+                            active_subtree_ix = Some(ix);
                             contains_active_pane = true;
                         }
                     }
@@ -952,6 +954,10 @@ impl PaneAxis {
                 let result = member.render((basis + ix) * 10, zoomed, render_cx, window, cx);
                 if result.contains_active_pane {
                     contains_active_pane = true;
+                    // First child whose subtree contains the active pane
+                    // wins. (No axis branches both ways — the active pane
+                    // sits in exactly one subtree.)
+                    active_subtree_ix.get_or_insert(ix);
                 }
                 result.element.into_any_element()
             })
@@ -967,6 +973,7 @@ impl PaneAxis {
         .with_is_leaf_pane_mask(is_leaf_pane)
         .children(rendered_children)
         .with_active_pane(active_pane_ix)
+        .with_active_subtree(active_subtree_ix, render_cx.active_pane().clone())
         .into_any_element();
 
         PaneRenderResult {
@@ -1074,7 +1081,7 @@ mod element {
     use std::{cell::RefCell, iter, rc::Rc, sync::Arc};
 
     use gpui::{
-        Along, AnyElement, App, Axis, BorderStyle, Bounds, Element, GlobalElementId,
+        Along, AnyElement, App, Axis, BorderStyle, Bounds, Element, Entity, GlobalElementId,
         HitboxBehavior, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
         Pixels, Point, Size, Style, WeakEntity, Window, px, relative, size,
     };
@@ -1085,7 +1092,7 @@ mod element {
     use ui::prelude::*;
     use util::ResultExt;
 
-    use crate::Workspace;
+    use crate::{Pane, Workspace};
 
     use crate::WorkspaceSettings;
 
@@ -1107,6 +1114,8 @@ mod element {
             bounding_boxes,
             children: SmallVec::new(),
             active_pane_ix: None,
+            active_subtree_ix: None,
+            active_pane: None,
             workspace,
             is_leaf_pane_mask: Vec::new(),
         }
@@ -1120,7 +1129,17 @@ mod element {
         flexes: Arc<Mutex<Vec<f32>>>,
         bounding_boxes: Arc<Mutex<Vec<Option<Bounds<Pixels>>>>>,
         children: SmallVec<[AnyElement; 2]>,
+        /// Set only when the active pane is a *direct* leaf child of this
+        /// axis. Used by `inactive_opacity` / `border_size` overlays and by
+        /// the unconditional full-extent divider highlight.
         active_pane_ix: Option<usize>,
+        /// Set when the active pane is anywhere inside the subtree at this
+        /// child index (including nested deeper). Used to clip the divider
+        /// highlight at outer axes to the active pane's actual extent.
+        active_subtree_ix: Option<usize>,
+        /// Handle to the active pane; used at paint time to look up its
+        /// screen-coordinate bounds for clipping outer dividers.
+        active_pane: Option<Entity<Pane>>,
         workspace: WeakEntity<Workspace>,
         // Track which children are leaf panes (Member::Pane) vs axes (Member::Axis)
         is_leaf_pane_mask: Vec<bool>,
@@ -1146,6 +1165,16 @@ mod element {
     impl PaneAxisElement {
         pub fn with_active_pane(mut self, active_pane_ix: Option<usize>) -> Self {
             self.active_pane_ix = active_pane_ix;
+            self
+        }
+
+        pub fn with_active_subtree(
+            mut self,
+            subtree_ix: Option<usize>,
+            active_pane: Entity<Pane>,
+        ) -> Self {
+            self.active_subtree_ix = subtree_ix;
+            self.active_pane = Some(active_pane);
             self
         }
 
@@ -1407,11 +1436,18 @@ mod element {
                 child.element.paint(window, cx);
             }
 
+            // Codon defaults `inactive_opacity` to a subtle 0.85 (overlay
+            // ~15% opaque over inactive leaf panes). With only two panes,
+            // the divider highlights both sides equally, so the dim is
+            // what tells the user which side is focused. Explicit user
+            // settings (including 1.0 to disable) still win.
+            const CODON_DEFAULT_INACTIVE_OPACITY: f32 = 0.85;
             let overlay_opacity = WorkspaceSettings::get(None, cx)
                 .active_pane_modifiers
                 .inactive_opacity
                 .map(|val| val.0.clamp(0.0, 1.0))
-                .and_then(|val| (val <= 1.).then_some(val));
+                .and_then(|val| (val <= 1.).then_some(val))
+                .or(Some(CODON_DEFAULT_INACTIVE_OPACITY));
 
             let mut overlay_background = cx.theme().colors().editor_background;
             if let Some(opacity) = overlay_opacity {
@@ -1476,22 +1512,32 @@ mod element {
                         window.set_cursor_style(cursor_style, &handle.hitbox);
                     }
 
-                    // tmux-style pane-active-border: highlight the dividers
-                    // immediately adjacent to the active pane. `active_pane_ix`
-                    // is only set when the active pane is a *direct* leaf
-                    // child of this axis — at outer axes we leave the divider
-                    // alone, since a nested-axis child's divider would span
-                    // beyond the active pane's actual bounds.
-                    let highlighted = self
+                    // tmux-style pane-active-border. Three cases:
+                    //   1. Active pane is a *direct* leaf neighbour of this
+                    //      divider → highlight the divider's full extent
+                    //      (the perpendicular span is the active pane's
+                    //      span by construction).
+                    //   2. Active pane sits *inside* a nested subtree on
+                    //      one side of this divider → highlight only the
+                    //      segment of the divider that overlaps the active
+                    //      pane's perpendicular bounds, default-colour the
+                    //      rest. Needs the active pane's screen bounds,
+                    //      which the workspace already tracks.
+                    //   3. Neither → default colour, default thickness.
+                    const HIGHLIGHT_THICKNESS: f32 = 3.0;
+                    let direct_active = self
                         .active_pane_ix
                         .is_some_and(|active| ix == active || ix + 1 == active);
+                    let subtree_active = !direct_active
+                        && self
+                            .active_subtree_ix
+                            .is_some_and(|active| ix == active || ix + 1 == active);
 
-                    if highlighted {
-                        // Grow to 3px (centered on the original 1px gap so
-                        // it overlaps 1px of each adjacent pane) — the
-                        // colour alone is hard to read on a 1px line.
-                        const HIGHLIGHT_THICKNESS: f32 = 3.0;
-                        let extra = px(HIGHLIGHT_THICKNESS - DIVIDER_SIZE);
+                    let highlight_color = cx.theme().colors().border_focused;
+                    let default_color = cx.theme().colors().pane_group_border;
+                    let extra = px(HIGHLIGHT_THICKNESS - DIVIDER_SIZE);
+
+                    if direct_active {
                         let highlight_bounds = Bounds {
                             origin: handle
                                 .divider_bounds
@@ -1502,15 +1548,40 @@ mod element {
                                 .size
                                 .apply_along(self.axis, |_| px(HIGHLIGHT_THICKNESS)),
                         };
-                        window.paint_quad(gpui::fill(
-                            highlight_bounds,
-                            cx.theme().colors().border_focused,
-                        ));
+                        window.paint_quad(gpui::fill(highlight_bounds, highlight_color));
+                    } else if subtree_active
+                        && let Some(active_pane) = self.active_pane.as_ref()
+                        && let Some(active_bounds) = self
+                            .workspace
+                            .upgrade()
+                            .and_then(|ws| ws.read(cx).center().bounding_box_for_pane(active_pane))
+                    {
+                        // Default divider first; clipped highlight on top.
+                        window.paint_quad(gpui::fill(handle.divider_bounds, default_color));
+                        let perp = self.axis.invert();
+                        let div_start = handle.divider_bounds.origin.along(perp);
+                        let div_end = div_start + handle.divider_bounds.size.along(perp);
+                        let act_start = active_bounds.origin.along(perp);
+                        let act_end = act_start + active_bounds.size.along(perp);
+                        let lo = div_start.max(act_start);
+                        let hi = div_end.min(act_end);
+                        if hi > lo {
+                            let segment_bounds = Bounds {
+                                origin: handle
+                                    .divider_bounds
+                                    .origin
+                                    .apply_along(self.axis, |o| o - extra / 2.0)
+                                    .apply_along(perp, |_| lo),
+                                size: handle
+                                    .divider_bounds
+                                    .size
+                                    .apply_along(self.axis, |_| px(HIGHLIGHT_THICKNESS))
+                                    .apply_along(perp, |_| hi - lo),
+                            };
+                            window.paint_quad(gpui::fill(segment_bounds, highlight_color));
+                        }
                     } else {
-                        window.paint_quad(gpui::fill(
-                            handle.divider_bounds,
-                            cx.theme().colors().pane_group_border,
-                        ));
+                        window.paint_quad(gpui::fill(handle.divider_bounds, default_color));
                     }
 
                     window.on_mouse_event({
