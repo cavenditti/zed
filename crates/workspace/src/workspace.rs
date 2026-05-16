@@ -1038,10 +1038,10 @@ impl SerializableItemRegistry {
             // panel's own `load()` constructor drives the rehydrate. The
             // restorer wraps the resulting entity in `PanelItemAdapter`
             // and returns it as an `ItemHandle`.
-            if let Some(restorer) = crate::codon_bridge::lookup_panel_restorer(item_kind) {
+            if let Some(spec) = crate::codon_bridge::codon_pane_kind_spec(item_kind) {
                 let async_cx = window.to_async(cx);
                 let _ = (project, workspace_id, item_item);
-                return restorer(workspace, async_cx);
+                return (spec.restore)(workspace, async_cx);
             }
             return Task::ready(Err(anyhow!(
                 "cannot deserialize {}, descriptor not found",

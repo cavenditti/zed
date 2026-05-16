@@ -163,11 +163,11 @@ fn capture_pane(pane: &Entity<Pane>, window: &mut Window, cx: &mut App) -> PaneS
                     active: Some(serializable.item_id()) == active_id,
                     preview: pane_ref.is_active_preview_item(serializable.item_id()),
                 })
-            } else if let Some(kind) = panel_kind_for_item(handle.as_ref()) {
+            } else if let Some(kind) = codon_pane_kind_for_item(handle.as_ref()) {
                 // codon fallback: adapter-hosted panels expose their kind
                 // (`Panel::persistent_name()`) but don't implement
                 // `SerializableItem`. Capture them under that kind so
-                // `apply_layout` can route them through the panel-restorer
+                // `apply_layout` can route them through the codon-pane
                 // registry on rehydrate.
                 Some(ItemSnapshot {
                     kind: kind.to_string(),
@@ -187,28 +187,74 @@ fn capture_pane(pane: &Entity<Pane>, window: &mut Window, cx: &mut App) -> PaneS
     }
 }
 
-/// Codon-only hook: codon-panes installs this to surface the
-/// `persistent_name` of adapter-hosted panels for capture. Without it,
-/// adapter items are silently dropped by `capture_layout` (they aren't
-/// `SerializableItem`). See `lookup_panel_restorer` for the matching
-/// rehydrate hook.
-pub type ItemPanelKindFn = fn(&dyn ItemHandle) -> Option<&'static str>;
-static ITEM_PANEL_KIND: OnceLock<RwLock<Option<ItemPanelKindFn>>> = OnceLock::new();
+/// Async factory that rehydrates a codon adapter-hosted pane by its kind.
+///
+/// Codon hosts the seven Zed `impl Panel` types via a generic adapter
+/// (`PanelItemAdapter<P>` in `codon-panes`) rather than the built-in
+/// dock-host. To round-trip those adapter-hosted panes through
+/// `LayoutSnapshot` we need a way to spawn the panel by its
+/// `persistent_name()` kind string — there is no generic `Panel::load`
+/// constructor we can call by type parameter.
+pub type CodonPaneRestoreFn = fn(
+    WeakEntity<Workspace>,
+    AsyncWindowContext,
+) -> Task<anyhow::Result<Box<dyn ItemHandle>>>;
 
-fn item_panel_kind_slot() -> &'static RwLock<Option<ItemPanelKindFn>> {
-    ITEM_PANEL_KIND.get_or_init(|| RwLock::new(None))
+/// Predicate that returns true when `handle` is the codon adapter for this
+/// pane kind. Used during `capture_layout` to detect adapter-hosted panels
+/// that don't implement `SerializableItem`.
+pub type CodonPaneMatchesFn = fn(&dyn ItemHandle) -> bool;
+
+/// Codon-only registry entry: one per adapter-hosted pane kind.
+///
+/// codon-panes registers one spec per converted panel during init via
+/// [`codon_register_pane_kind`]. The registry replaces an earlier pair of
+/// codon-side registration functions that split the same concern across
+/// two static slots.
+#[derive(Clone, Copy)]
+pub struct CodonPaneKindSpec {
+    /// The panel's `persistent_name()`. Used as the `kind` tag in
+    /// `ItemSnapshot` and as the lookup key for restoration.
+    pub kind: &'static str,
+    /// True when `handle` is the adapter for this kind. Called from
+    /// `capture_layout` for every non-`SerializableItem` handle.
+    pub matches: CodonPaneMatchesFn,
+    /// Async factory that runs the panel's existing `load` constructor and
+    /// wraps the result in `PanelItemAdapter`.
+    pub restore: CodonPaneRestoreFn,
 }
 
-/// Codon-side: register the function that detects whether a given
-/// `ItemHandle` is a `PanelItemAdapter<P>` and returns the panel's
-/// `persistent_name`. Called once from `codon-panes::init`.
-pub fn register_item_panel_kind_fn(f: ItemPanelKindFn) {
-    *item_panel_kind_slot().write() = Some(f);
+static CODON_PANE_KINDS: OnceLock<RwLock<HashMap<&'static str, CodonPaneKindSpec>>> =
+    OnceLock::new();
+
+fn codon_pane_kind_map() -> &'static RwLock<HashMap<&'static str, CodonPaneKindSpec>> {
+    CODON_PANE_KINDS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn panel_kind_for_item(handle: &dyn ItemHandle) -> Option<&'static str> {
-    let f = *item_panel_kind_slot().read();
-    f.and_then(|f| f(handle))
+/// Register a codon adapter-hosted pane kind.
+///
+/// Idempotent: re-registering the same `kind` overwrites the prior spec.
+/// Called by `codon-panes::init` once per converted panel.
+pub fn codon_register_pane_kind(spec: CodonPaneKindSpec) {
+    codon_pane_kind_map().write().insert(spec.kind, spec);
+}
+
+/// Look up a previously-registered codon pane kind spec. Returns `None`
+/// when the kind has no codon-panes registration (e.g. when the snapshot
+/// was captured against a build without codon-panes, or before the
+/// registration ran).
+pub fn codon_pane_kind_spec(kind: &str) -> Option<CodonPaneKindSpec> {
+    codon_pane_kind_map().read().get(kind).copied()
+}
+
+fn codon_pane_kind_for_item(handle: &dyn ItemHandle) -> Option<&'static str> {
+    let map = codon_pane_kind_map().read();
+    for spec in map.values() {
+        if (spec.matches)(handle) {
+            return Some(spec.kind);
+        }
+    }
+    None
 }
 
 /// Replace the workspace's center group with `snapshot`. Existing panes are
@@ -228,44 +274,4 @@ pub fn apply_layout(
 /// to background work without cloning the whole tree.
 pub fn capture_arc(workspace: &Workspace, window: &mut Window, cx: &mut App) -> Arc<LayoutSnapshot> {
     Arc::new(capture_layout(workspace, window, cx))
-}
-
-/// Factory signature used by the panel-restorer registry below.
-///
-/// Codon hosts the seven Zed `impl Panel` types via a generic adapter
-/// (`PanelItemAdapter<P>` in `codon-panes`) rather than the built-in
-/// dock-host. To round-trip those adapter-hosted panes through
-/// `LayoutSnapshot` we need a way to spawn the panel by its
-/// `persistent_name()` kind string — there is no generic `Panel::load`
-/// constructor we can call by type parameter.
-///
-/// codon-panes registers one factory per converted panel during init.
-/// The async closure runs the panel's existing `load` constructor and
-/// wraps the resulting entity in the adapter.
-pub type PanelRestorerFn = fn(
-    WeakEntity<Workspace>,
-    AsyncWindowContext,
-) -> Task<anyhow::Result<Box<dyn ItemHandle>>>;
-
-static PANEL_RESTORERS: OnceLock<RwLock<HashMap<&'static str, PanelRestorerFn>>> = OnceLock::new();
-
-fn restorer_map() -> &'static RwLock<HashMap<&'static str, PanelRestorerFn>> {
-    PANEL_RESTORERS.get_or_init(|| RwLock::new(HashMap::new()))
-}
-
-/// Register a panel restorer for the given `persistent_name` kind.
-///
-/// Idempotent: re-registering the same kind overwrites the prior factory.
-/// Called by `codon-panes::init` once per converted panel; safe to call
-/// from non-test paths only.
-pub fn register_panel_restorer(kind: &'static str, factory: PanelRestorerFn) {
-    restorer_map().write().insert(kind, factory);
-}
-
-/// Look up a previously-registered panel restorer for `kind`. Returns
-/// `None` when the kind has no codon-panes registration (e.g. when the
-/// snapshot was captured against a build without codon-panes, or before
-/// the restorer registration ran).
-pub fn lookup_panel_restorer(kind: &str) -> Option<PanelRestorerFn> {
-    restorer_map().read().get(kind).copied()
 }
