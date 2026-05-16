@@ -73,7 +73,6 @@ impl Render for StatusBar {
 
         h_flex()
             .w_full()
-            .justify_between()
             .gap(DynamicSpacing::Base04.rems(cx))
             .py(px(1.))
             .px(DynamicSpacing::Base04.rems(cx))
@@ -114,35 +113,43 @@ impl Render for StatusBar {
 }
 
 impl StatusBar {
-    // The left zone is `flex_shrink_0` by design: REQ:codon/status-bar#c-left-protected
-    // requires mode + session + windows to stay fully readable even when the bar
-    // is otherwise overflowing. The centre zone (flex_1, min_w_0) absorbs all
-    // width pressure first; the right zone (flex_shrink, min_w_0) gives up
-    // pixels next, from its leftmost item inward (its items are rendered
-    // `.rev()`-ed so the last-registered ends up leftmost on screen and is the
-    // first to collapse). Mode + session + windows never lose pixels.
+    // Three flex slots of equal weight (left/right wrappers `flex_1`, centre
+    // `flex_shrink_0`) make the centre items sit at the bar's true visual
+    // midpoint instead of the slot-between-left-and-right that a plain
+    // `justify_between` produces. The left wrapper aligns its content to the
+    // start and its inner group is `flex_shrink_0` so mode + session + windows
+    // stay fully readable (REQ:codon/status-bar#c-left-protected) — the right
+    // wrapper aligns its content to the end, can shrink, and clips its
+    // leftmost item first (items are rendered `.rev()`-ed so the
+    // last-registered ends up leftmost on screen and is the first to
+    // collapse).
     fn render_left_tools(
         &self,
         sidebar: &SidebarStatus,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
-            .flex_shrink_0()
-            .gap_1()
-            .when(
-                sidebar.show_toggle && !sidebar.open && sidebar.side == SidebarSide::Left,
-                |this| this.child(self.render_sidebar_toggle(sidebar, cx)),
+            .flex_1()
+            .min_w_0()
+            .justify_start()
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .gap_1()
+                    .when(
+                        sidebar.show_toggle
+                            && !sidebar.open
+                            && sidebar.side == SidebarSide::Left,
+                        |this| this.child(self.render_sidebar_toggle(sidebar, cx)),
+                    )
+                    .children(self.left_items.iter().map(|item| item.to_any())),
             )
-            .children(self.left_items.iter().map(|item| item.to_any()))
     }
 
     fn render_center_tools(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
-            .flex_1()
-            .min_w_0()
+            .flex_shrink_0()
             .gap_1()
-            .overflow_x_hidden()
-            .justify_center()
             .children(self.center_items.iter().map(|item| item.to_any()))
     }
 
@@ -152,14 +159,21 @@ impl StatusBar {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         h_flex()
-            .flex_shrink()
+            .flex_1()
             .min_w_0()
-            .gap_1()
-            .overflow_x_hidden()
-            .children(self.right_items.iter().rev().map(|item| item.to_any()))
-            .when(
-                sidebar.show_toggle && !sidebar.open && sidebar.side == SidebarSide::Right,
-                |this| this.child(self.render_sidebar_toggle(sidebar, cx)),
+            .justify_end()
+            .child(
+                h_flex()
+                    .min_w_0()
+                    .gap_1()
+                    .overflow_x_hidden()
+                    .children(self.right_items.iter().rev().map(|item| item.to_any()))
+                    .when(
+                        sidebar.show_toggle
+                            && !sidebar.open
+                            && sidebar.side == SidebarSide::Right,
+                        |this| this.child(self.render_sidebar_toggle(sidebar, cx)),
+                    ),
             )
     }
 
