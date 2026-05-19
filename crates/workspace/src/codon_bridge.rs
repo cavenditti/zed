@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
-use gpui::{App, AsyncWindowContext, Context, Entity, Task, WeakEntity, Window};
+use gpui::{App, AsyncWindowContext, Bounds, Context, Entity, Pixels, Task, WeakEntity, Window};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
@@ -274,4 +274,15 @@ pub fn apply_layout(
 /// to background work without cloning the whole tree.
 pub fn capture_arc(workspace: &Workspace, window: &mut Window, cx: &mut App) -> Arc<LayoutSnapshot> {
     Arc::new(capture_layout(workspace, window, cx))
+}
+
+/// Pixel bounds of the workspace's currently active center pane.
+///
+/// Returns `None` before the first layout pass has measured the pane (the
+/// center group records bounding boxes during `request_layout`). Used by
+/// codon-which-key to size and position the chord HUD against the active
+/// pane rather than the whole window — see
+/// `REQ:codon/which-key-overlay#c-full-pane-width`.
+pub fn active_pane_bounds(workspace: &Workspace) -> Option<Bounds<Pixels>> {
+    workspace.bounding_box_for_pane(workspace.active_pane())
 }
