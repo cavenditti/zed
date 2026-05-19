@@ -6878,13 +6878,16 @@ impl Workspace {
 
         let mut new_panes: Vec<Entity<Pane>> = Vec::new();
         codon_collect_panes(&new_root, &mut new_panes);
-        // O(N+M) merge: single O(M) hash-set build of the existing pane
-        // entity ids, then a single O(N) pass over the incoming vec.
-        // `HashSet::insert` returns true on first sight, so it doubles as
-        // the "push this one" predicate. Replaces an earlier
-        // `panes.iter().any(...)` inner loop that was O(N*M).
-        let mut existing_ids: HashSet<EntityId> =
+        // Snapshot ids that survived the `retain` above. Panes whose ids
+        // appear here lived through the detach/attach cycle — they are
+        // the entire point of the codon runtime cache, so notifying them
+        // would defeat the cache-warmth we just paid to keep.
+        let prev_ids: HashSet<EntityId> =
             self.panes.iter().map(|p| p.entity_id()).collect();
+        // O(N+M) merge: extend `prev_ids` in place; `HashSet::insert`
+        // returns true on first sight, so it doubles as the "push this
+        // pane" predicate.
+        let mut existing_ids = prev_ids.clone();
         let mut new_pane_count: u32 = 0;
         for pane in &new_panes {
             if existing_ids.insert(pane.entity_id()) {
@@ -6916,12 +6919,15 @@ impl Workspace {
         // for the active item's render path to refresh its focus state).
         window.focus(&active.read(cx).focus_handle(cx), cx);
 
-        // Force every restored pane (and its items) to re-render. Detaching
-        // a pane from `workspace.panes` doesn't invalidate the cached views
-        // GPUI keeps per entity id, so we explicitly notify them here so the
-        // first frame after restore renders fresh content.
+        // Notify only previously-unseen panes. Retained panes keep their
+        // cached render state — the whole point of the runtime cache is
+        // to skip rebuilding shaped-line layouts on every switch. The
+        // workspace-level `cx.notify()` below still fires so GPUI knows
+        // the workspace itself changed.
         for pane in &new_panes {
-            pane.update(cx, |_, cx| cx.notify());
+            if !prev_ids.contains(&pane.entity_id()) {
+                pane.update(cx, |_, cx| cx.notify());
+            }
         }
 
         cx.notify();
@@ -16042,5 +16048,180 @@ mod tests {
         });
         let path = workspace.read_with(cx, |workspace, cx| workspace.most_recent_active_path(cx));
         assert_eq!(path, None);
+    }
+
+    // ─── restore_center_root: notify elision (phase-17/switch-restore-skip-notify) ───
+    //
+    // The codon runtime cache stashes the live `Member` tree across a
+    // window switch and re-attaches it on the way back. Panes that are
+    // already present in `workspace.panes` when restore runs must not
+    // be invalidated via the explicit per-pane notify loop — their
+    // cached render state is exactly what the runtime cache exists to
+    // preserve.
+    //
+    // The retain step at the top of `restore_center_root` removes panes
+    // that belonged to the OUTGOING tree (`self.center.root`); the
+    // incoming tree's panes are normally NOT in `workspace.panes` at
+    // the moment the merge runs, because the codon stash holds them in
+    // a detached `Member` clone. The notify-elision branch only fires
+    // when the same pane entity sits in BOTH the outgoing and the
+    // incoming tree — a degenerate case the test below constructs
+    // directly via `restore_center_root` with the live tree as input.
+    //
+    // We use the timing callback's `new_pane_count` rather than per-pane
+    // notify counters because `cx.observe` debounces multiple
+    // back-to-back `cx.notify()` calls into a single observation. That
+    // collapses the "1 notify (eliding)" vs "1 notify (not eliding)"
+    // distinction the per-pane test would want to draw. The structural
+    // assertion via the callback is the cleanest signal we can extract
+    // from the foreground thread.
+
+    #[gpui::test]
+    async fn restore_center_root_reports_only_truly_new_panes_in_count(
+        cx: &mut TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+        // Build a "stashed" tree of two panes, then replace the center
+        // with an empty pane. The two stashed panes drop out of
+        // `workspace.panes` but stay alive via the cloned `Member`.
+        workspace.update_in(cx, |workspace, window, cx| {
+            let first = cx.new(TestItem::new);
+            workspace.add_item_to_active_pane(Box::new(first), None, true, window, cx);
+            workspace.split_pane(
+                workspace.active_pane().clone(),
+                SplitDirection::Right,
+                window,
+                cx,
+            );
+        });
+
+        let (stashed_root, stashed_active) = workspace.update(cx, |workspace, _cx| {
+            (
+                workspace.center.root.clone(),
+                workspace.active_pane().clone(),
+            )
+        });
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.replace_center_with_empty_pane(window, cx);
+        });
+        cx.run_until_parked();
+
+        // Install a timing-callback recorder. The `OnceLock` semantics
+        // mean the first installer wins for the process lifetime;
+        // workspace tests run with no other installer, so the test gets
+        // a clean slot.
+        thread_local! {
+            static LAST_NEW_PANE_COUNT: RefCell<Option<u32>> = const { RefCell::new(None) };
+        }
+        crate::codon_bridge::set_restore_timing_callback(|_restore_ms, new_pane_count| {
+            LAST_NEW_PANE_COUNT.with(|slot| *slot.borrow_mut() = Some(new_pane_count));
+        });
+
+        // Re-attach the stashed tree. After the retain step removes the
+        // empty pane, both stashed panes are truly-new (absent from
+        // `workspace.panes`), so the callback must report exactly 2.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.restore_center_root(stashed_root, Some(stashed_active), window, cx);
+        });
+        cx.run_until_parked();
+
+        let observed = LAST_NEW_PANE_COUNT.with(|slot| *slot.borrow());
+        assert_eq!(
+            observed,
+            Some(2),
+            "expected exactly 2 truly-new panes in the restore-timing callback"
+        );
+    }
+
+    #[gpui::test]
+    async fn restore_center_root_notifies_truly_new_panes(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+
+        // Build a "stashed" tree: split the workspace to get two panes,
+        // detach the second via `replace_center_with_empty_pane` (which
+        // removes it from `workspace.panes` but keeps the `Entity<Pane>`
+        // alive via the cloned `Member` we hold below), then restore.
+        workspace.update_in(cx, |workspace, window, cx| {
+            let first = cx.new(TestItem::new);
+            workspace.add_item_to_active_pane(Box::new(first), None, true, window, cx);
+            workspace.split_pane(
+                workspace.active_pane().clone(),
+                SplitDirection::Right,
+                window,
+                cx,
+            );
+        });
+
+        let (stashed_root, stashed_active) = workspace.update(cx, |workspace, _cx| {
+            (
+                workspace.center.root.clone(),
+                workspace.active_pane().clone(),
+            )
+        });
+
+        // Replace center with a fresh empty pane — this removes the
+        // stashed panes from `workspace.panes`. The cloned `Member` tree
+        // keeps the `Entity<Pane>` handles alive.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.replace_center_with_empty_pane(window, cx);
+        });
+        cx.run_until_parked();
+
+        // Confirm the stashed panes are NOT in workspace.panes today.
+        let stashed_pane_ids: Vec<EntityId> = {
+            let mut panes = Vec::new();
+            codon_collect_panes(&stashed_root, &mut panes);
+            panes.iter().map(|p| p.entity_id()).collect()
+        };
+        workspace.update(cx, |workspace, _cx| {
+            for id in &stashed_pane_ids {
+                assert!(
+                    !workspace.panes.iter().any(|p| p.entity_id() == *id),
+                    "pre-restore: stashed pane {id:?} must not be in workspace.panes"
+                );
+            }
+        });
+
+        // Install one notify observer per stashed pane.
+        let counters: Vec<Rc<RefCell<usize>>> = workspace.update(cx, |_workspace, cx| {
+            let mut panes = Vec::new();
+            codon_collect_panes(&stashed_root, &mut panes);
+            panes
+                .iter()
+                .map(|pane| {
+                    let counter = Rc::new(RefCell::new(0usize));
+                    let counter_for_closure = counter.clone();
+                    cx.observe(pane, move |_, _, _| {
+                        *counter_for_closure.borrow_mut() += 1;
+                    })
+                    .detach();
+                    counter
+                })
+                .collect()
+        });
+
+        // Re-attach the stashed tree. Every pane in `stashed_root` is
+        // truly-new (not in `workspace.panes`), so each must be notified.
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.restore_center_root(stashed_root, Some(stashed_active), window, cx);
+        });
+        cx.run_until_parked();
+
+        for (idx, counter) in counters.iter().enumerate() {
+            assert!(
+                *counter.borrow() >= 1,
+                "truly-new pane {idx} must be notified at least once after restore"
+            );
+        }
     }
 }

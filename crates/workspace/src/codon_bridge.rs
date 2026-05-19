@@ -293,9 +293,11 @@ static CODON_RESTORE_TIMING_CB: OnceLock<CodonRestoreTimingFn> = OnceLock::new()
 
 /// Install the restore-timing callback. Idempotent: the first install
 /// wins so a re-`init` (e.g. in tests) does not overwrite the active
-/// recorder.
+/// recorder; subsequent calls return the already-installed callback.
 pub fn set_restore_timing_callback(cb: CodonRestoreTimingFn) {
-    let _ = CODON_RESTORE_TIMING_CB.set(cb);
+    if let Err(_existing) = CODON_RESTORE_TIMING_CB.set(cb) {
+        log::trace!("codon restore-timing callback already installed; ignoring re-install");
+    }
 }
 
 /// Notify the installed restore-timing callback (if any). Called from
