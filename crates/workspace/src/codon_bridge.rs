@@ -21,10 +21,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Member, Pane, PaneAxis, Workspace,
     item::ItemHandle,
-    persistence::{
-        SerializedAxis,
-        model::{SerializedItem, SerializedPane, SerializedPaneGroup},
-    },
+    pane_group::PaneStack,
+    persistence::model::{SerializedItem, SerializedPane, SerializedPaneGroup},
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,35 +88,131 @@ impl LayoutSnapshot {
         })
     }
 
-    fn into_serialized(self) -> SerializedPaneGroup {
-        match self {
-            LayoutSnapshot::Group {
-                axis,
-                flexes,
-                children,
-            } => SerializedPaneGroup::Group {
-                axis: SerializedAxis(axis.into_gpui()),
-                flexes,
-                children: children
-                    .into_iter()
-                    .map(LayoutSnapshot::into_serialized)
-                    .collect(),
-            },
-            LayoutSnapshot::Stack { members, active } => members
+    /// Lower a `LayoutSnapshot::Pane` to the on-disk `SerializedPane`
+    /// form so it can ride the existing `SerializedPaneGroup::deserialize`
+    /// machinery for item rehydration.
+    fn into_serialized_pane(pane: PaneSnapshot) -> SerializedPane {
+        SerializedPane::new(
+            pane.items
                 .into_iter()
-                .nth(active)
-                .map(LayoutSnapshot::into_serialized)
-                .unwrap_or_else(|| SerializedPaneGroup::Pane(SerializedPane::new(vec![], true, 0))),
-            LayoutSnapshot::Pane(pane) => SerializedPaneGroup::Pane(SerializedPane::new(
-                pane.items
-                    .into_iter()
-                    .map(|item| {
-                        SerializedItem::new(item.kind, item.item_id, item.active, item.preview)
-                    })
-                    .collect(),
-                pane.active,
-                pane.pinned_count,
-            )),
+                .map(|item| SerializedItem::new(item.kind, item.item_id, item.active, item.preview))
+                .collect(),
+            pane.active,
+            pane.pinned_count,
+        )
+    }
+}
+
+/// Async deserializer for `LayoutSnapshot` that mirrors the structure of
+/// [`SerializedPaneGroup::deserialize`] but additionally produces
+/// [`Member::Stack`] for `LayoutSnapshot::Stack`. Leaf [`PaneSnapshot`]s
+/// route through `SerializedPaneGroup::Pane(...).deserialize` so existing
+/// item rehydration (editor buffers, terminal cwds, codon adapter panes)
+/// continues to work uniformly.
+///
+/// Returns `None` only when every subtree failed to rehydrate; otherwise
+/// returns `(member, active_pane, items)` analogously to the
+/// `SerializedPaneGroup::deserialize` contract.
+pub(crate) async fn deserialize_layout_snapshot(
+    snapshot: LayoutSnapshot,
+    project: &gpui::Entity<project::Project>,
+    workspace_id: crate::WorkspaceId,
+    workspace: WeakEntity<Workspace>,
+    cx: &mut AsyncWindowContext,
+) -> Option<(
+    Member,
+    Option<gpui::Entity<Pane>>,
+    Vec<Option<Box<dyn ItemHandle>>>,
+)> {
+    match snapshot {
+        LayoutSnapshot::Group {
+            axis,
+            flexes,
+            children,
+        } => {
+            let mut current_active_pane = None;
+            let mut members = Vec::new();
+            let mut items = Vec::new();
+            for child in children {
+                if let Some((new_member, active_pane, new_items)) = Box::pin(
+                    deserialize_layout_snapshot(child, project, workspace_id, workspace.clone(), cx),
+                )
+                .await
+                {
+                    members.push(new_member);
+                    items.extend(new_items);
+                    current_active_pane = current_active_pane.or(active_pane);
+                }
+            }
+
+            if members.is_empty() {
+                return None;
+            }
+            if members.len() == 1 {
+                return Some((members.remove(0), current_active_pane, items));
+            }
+
+            Some((
+                Member::Axis(PaneAxis::load(axis.into_gpui(), members, flexes)),
+                current_active_pane,
+                items,
+            ))
+        }
+        LayoutSnapshot::Stack { members, active } => {
+            let mut current_active_pane = None;
+            let mut panes: Vec<gpui::Entity<Pane>> = Vec::new();
+            let mut items = Vec::new();
+            for child in members {
+                if let Some((child_member, active_pane, new_items)) = Box::pin(
+                    deserialize_layout_snapshot(child, project, workspace_id, workspace.clone(), cx),
+                )
+                .await
+                {
+                    // A Stack member is itself a leaf-shaped node: it
+                    // should resolve to a single pane. If a child
+                    // unexpectedly produced an Axis (would only happen
+                    // for a hand-crafted snapshot or a future shape
+                    // change), descend to its first leaf so the stack
+                    // remains well-formed.
+                    let pane_handle = match child_member {
+                        Member::Pane(pane) => pane,
+                        Member::Stack(stack) => stack.panes[stack.active].clone(),
+                        Member::Axis(_) => {
+                            log::warn!(
+                                "deserialize_layout_snapshot: Stack child resolved to Axis; skipping"
+                            );
+                            continue;
+                        }
+                    };
+                    panes.push(pane_handle);
+                    items.extend(new_items);
+                    current_active_pane = current_active_pane.or(active_pane);
+                }
+            }
+
+            if panes.is_empty() {
+                return None;
+            }
+            // Forward-compatibility: a one-member stack is the legacy
+            // degraded shape from before live stacks shipped. Emit a
+            // plain `Member::Pane` so the `panes.len() >= 2` invariant
+            // holds.
+            if panes.len() == 1 {
+                let pane = panes.remove(0);
+                return Some((Member::Pane(pane), current_active_pane, items));
+            }
+            let active = active.min(panes.len() - 1);
+            Some((
+                Member::Stack(PaneStack::new(panes, active)),
+                current_active_pane,
+                items,
+            ))
+        }
+        LayoutSnapshot::Pane(pane_snapshot) => {
+            let serialized = LayoutSnapshot::into_serialized_pane(pane_snapshot);
+            SerializedPaneGroup::Pane(serialized)
+                .deserialize(project, workspace_id, workspace, cx)
+                .await
         }
     }
 }
@@ -151,6 +245,14 @@ fn capture_member(member: &Member, window: &mut Window, cx: &mut App) -> LayoutS
     match member {
         Member::Axis(axis) => capture_axis(axis, window, cx),
         Member::Pane(pane) => LayoutSnapshot::Pane(capture_pane(pane, window, cx)),
+        Member::Stack(stack) => LayoutSnapshot::Stack {
+            members: stack
+                .panes
+                .iter()
+                .map(|pane| LayoutSnapshot::Pane(capture_pane(pane, window, cx)))
+                .collect(),
+            active: stack.active,
+        },
     }
 }
 
@@ -277,13 +379,20 @@ fn codon_pane_kind_for_item(handle: &dyn ItemHandle) -> Option<&'static str> {
 /// dropped before the new ones are constructed; items re-hydrate via the
 /// `SerializableItemRegistry`, so editor buffers and terminal connections
 /// referenced by the same item id are preserved.
+///
+/// `LayoutSnapshot::Stack` round-trips: the apply path reconstructs a
+/// [`Member::Stack`] so the inactive members survive. The forward-compat
+/// fallback for `Stack { members: vec![one], active: 0 }` snapshots
+/// (the legacy degraded shape captured before live stacks shipped)
+/// produces a [`Member::Pane`] instead, since the stack invariant is
+/// `panes.len() >= 2`.
 pub fn apply_layout(
     workspace: &mut Workspace,
     snapshot: LayoutSnapshot,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Task<Result<()>> {
-    workspace.replace_center_with_snapshot(snapshot.into_serialized(), window, cx)
+    workspace.replace_center_with_layout_snapshot(snapshot, window, cx)
 }
 
 /// Convenience for `Arc`-shared snapshots when callers want to hand them off
@@ -333,4 +442,61 @@ pub fn notify_restore_timing(restore_ms: f32, new_pane_count: u32) {
 /// `REQ:codon/which-key-overlay#c-full-pane-width`.
 pub fn active_pane_bounds(workspace: &Workspace) -> Option<Bounds<Pixels>> {
     workspace.bounding_box_for_pane(workspace.active_pane())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pane_snap(kind: &str, item_id: u64) -> LayoutSnapshot {
+        LayoutSnapshot::Pane(PaneSnapshot {
+            items: vec![ItemSnapshot {
+                kind: kind.to_string(),
+                item_id,
+                active: true,
+                preview: false,
+            }],
+            active: true,
+            pinned_count: 0,
+        })
+    }
+
+    /// Lossless round-trip through serde. Guards the on-disk shape of
+    /// `LayoutSnapshot::Stack` — saved sessions written today must
+    /// continue to deserialise after future refactors.
+    #[test]
+    fn stack_snapshot_serde_round_trips() {
+        let original = LayoutSnapshot::Stack {
+            members: vec![
+                pane_snap("Editor", 1),
+                pane_snap("Editor", 2),
+                pane_snap("Editor", 3),
+            ],
+            active: 1,
+        };
+
+        let serialized = serde_json::to_string(&original).expect("serialize");
+        let parsed: LayoutSnapshot =
+            serde_json::from_str(&serialized).expect("deserialize round-trip");
+        assert_eq!(parsed, original);
+    }
+
+    /// Forward-compat: a legacy "degraded" snapshot that captured a
+    /// stack as a single-member Stack still deserialises. The active
+    /// member becomes the visible pane on apply (verified separately
+    /// via the in-workspace `replace_center_with_layout_snapshot`
+    /// path); here we just confirm the JSON shape parses.
+    #[test]
+    fn legacy_single_member_stack_parses() {
+        let json = r#"{"kind":"Stack","members":[{"kind":"Pane","items":[{"kind":"Editor","item_id":1,"active":true,"preview":false}],"active":true,"pinned_count":0}],"active":0}"#;
+        let parsed: LayoutSnapshot =
+            serde_json::from_str(json).expect("legacy snapshot must parse");
+        match parsed {
+            LayoutSnapshot::Stack { members, active } => {
+                assert_eq!(members.len(), 1);
+                assert_eq!(active, 0);
+            }
+            other => panic!("expected Stack, got {other:?}"),
+        }
+    }
 }

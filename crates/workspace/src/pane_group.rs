@@ -73,6 +73,29 @@ impl PaneGroup {
                 }
             }
             Member::Axis(axis) => axis.split(old_pane, new_pane, direction),
+            Member::Stack(stack) => {
+                // The stack itself is a leaf; split the visible pane out
+                // of the stack and replace the root with a new axis whose
+                // two leaves are the surviving stack (if any) plus the
+                // new pane.
+                if stack.panes.iter().any(|pane| pane == old_pane) {
+                    let surviving = collapse_stack_after_removing(stack, old_pane);
+                    self.root = match surviving {
+                        Some(surviving) => Member::Axis(PaneAxis::new(
+                            direction.axis(),
+                            if direction.increasing() {
+                                vec![surviving, Member::Pane(new_pane.clone())]
+                            } else {
+                                vec![Member::Pane(new_pane.clone()), surviving]
+                            },
+                        )),
+                        None => Member::Pane(new_pane.clone()),
+                    };
+                    true
+                } else {
+                    false
+                }
+            }
         };
 
         // If the pane wasn't found, fall back to splitting the first pane in the tree.
@@ -85,6 +108,9 @@ impl PaneGroup {
                 Member::Axis(axis) => {
                     let _ = axis.split(&first_pane, new_pane, direction);
                 }
+                Member::Stack(_) => {
+                    self.root = Member::new_axis(first_pane, new_pane.clone(), direction);
+                }
             }
         }
 
@@ -94,6 +120,7 @@ impl PaneGroup {
     pub fn bounding_box_for_pane(&self, pane: &Entity<Pane>) -> Option<Bounds<Pixels>> {
         match &self.root {
             Member::Pane(_) => None,
+            Member::Stack(_) => None,
             Member::Axis(axis) => axis.bounding_box_for_pane(pane),
         }
     }
@@ -105,6 +132,10 @@ impl PaneGroup {
     pub fn pane_at_pixel_position(&self, coordinate: Point<Pixels>) -> Option<&Entity<Pane>> {
         match &self.root {
             Member::Pane(pane) => Some(pane),
+            // Until live-rendering of stacks ships
+            // (`phase-19/stacked-panes-render`), the stack is presented
+            // as a single slot whose visible member is the active pane.
+            Member::Stack(stack) => stack.panes.get(stack.active),
             Member::Axis(axis) => axis.pane_at_pixel_position(coordinate),
         }
     }
@@ -158,6 +189,7 @@ impl PaneGroup {
     fn find_pane_at_border(&self, direction: SplitDirection) -> Option<&Entity<Pane>> {
         match &self.root {
             Member::Pane(pane) => Some(pane),
+            Member::Stack(stack) => stack.panes.get(stack.active),
             Member::Axis(axis) => axis.find_pane_at_border(direction),
         }
     }
@@ -177,6 +209,22 @@ impl PaneGroup {
     fn remove_internal(&mut self, pane: &Entity<Pane>) -> Result<bool> {
         match &mut self.root {
             Member::Pane(_) => Ok(false),
+            Member::Stack(stack) => {
+                if !stack.panes.iter().any(|p| p == pane) {
+                    return Ok(false);
+                }
+                match collapse_stack_after_removing(stack, pane) {
+                    Some(surviving) => {
+                        self.root = surviving;
+                        Ok(true)
+                    }
+                    // A stack always has >= 2 panes; removing one cannot
+                    // produce an empty stack. Defensive arm to keep the
+                    // root in a usable state if the invariant is ever
+                    // violated.
+                    None => Ok(false),
+                }
+            }
             Member::Axis(axis) => {
                 if let Some(last_pane) = axis.remove(pane)? {
                     self.root = last_pane;
@@ -196,6 +244,7 @@ impl PaneGroup {
     ) {
         match &mut self.root {
             Member::Pane(_) => {}
+            Member::Stack(_) => {}
             Member::Axis(axis) => {
                 let _ = axis.resize(pane, direction, amount, bounds);
             }
@@ -206,6 +255,7 @@ impl PaneGroup {
     pub fn reset_pane_sizes(&mut self, cx: &mut App) {
         match &mut self.root {
             Member::Pane(_) => {}
+            Member::Stack(_) => {}
             Member::Axis(axis) => {
                 let _ = axis.reset_pane_sizes();
             }
@@ -216,6 +266,15 @@ impl PaneGroup {
     pub fn swap(&mut self, from: &Entity<Pane>, to: &Entity<Pane>, cx: &mut App) {
         match &mut self.root {
             Member::Pane(_) => {}
+            Member::Stack(stack) => {
+                for pane in stack.panes.iter_mut() {
+                    if pane == from {
+                        *pane = to.clone();
+                    } else if pane == to {
+                        *pane = from.clone();
+                    }
+                }
+            }
             Member::Axis(axis) => axis.swap(from, to),
         };
         self.mark_positions(cx);
@@ -291,9 +350,92 @@ impl PaneGroup {
 pub enum Member {
     Axis(PaneAxis),
     Pane(Entity<Pane>),
+    /// A stack of panes sharing the same slot. Only the pane at `active`
+    /// is visible; the others are kept alive (subscriptions intact) for
+    /// instant cycle. Invariant: `panes.len() >= 2` and `active < panes.len()`.
+    /// Constructed via [`Member::new_stack`] which enforces both.
+    Stack(PaneStack),
+}
+
+/// Container for a [`Member::Stack`] arm. Holds the ordered pane list plus
+/// the visible index. Mirrors the structural shape of [`PaneAxis`] (a
+/// `Vec<…>` + side-data) so codepaths that walk pane trees can treat it
+/// uniformly.
+#[derive(Debug, Clone)]
+pub struct PaneStack {
+    pub panes: Vec<Entity<Pane>>,
+    pub active: usize,
+}
+
+impl PaneStack {
+    /// Build a stack, normalising `active` into bounds. Empty / single-pane
+    /// stacks are rejected by [`Member::new_stack`]; this constructor
+    /// assumes the caller has already validated the `panes.len() >= 2`
+    /// invariant.
+    pub fn new(panes: Vec<Entity<Pane>>, active: usize) -> Self {
+        let active = if panes.is_empty() {
+            0
+        } else {
+            active.min(panes.len() - 1)
+        };
+        Self { panes, active }
+    }
+}
+
+/// Remove `pane` from `stack` and return the surviving [`Member`]: a
+/// reduced [`Member::Stack`] when 2+ panes remain, a [`Member::Pane`]
+/// when exactly one remains, or `None` when the stack is now empty.
+/// Used by codepaths (split / remove) that target a pane that happens to
+/// live inside a stack — the stack collapses to satisfy the
+/// `panes.len() >= 2` invariant.
+fn collapse_stack_after_removing(stack: &PaneStack, pane: &Entity<Pane>) -> Option<Member> {
+    let mut surviving: Vec<Entity<Pane>> = stack
+        .panes
+        .iter()
+        .filter(|p| *p != pane)
+        .cloned()
+        .collect();
+    match surviving.len() {
+        0 => None,
+        1 => Some(Member::Pane(surviving.remove(0))),
+        _ => {
+            let active = stack.active.min(surviving.len() - 1);
+            Some(Member::Stack(PaneStack::new(surviving, active)))
+        }
+    }
 }
 
 impl Member {
+    /// Construct a stacked member from `panes`. Returns
+    /// [`Member::Pane`] when the stack would have a single member (the
+    /// `Stack` invariant is `panes.len() >= 2`); returns `None` when the
+    /// input is empty. `active` is clamped into bounds.
+    pub fn new_stack(panes: Vec<Entity<Pane>>, active: usize) -> Option<Self> {
+        match panes.len() {
+            0 => None,
+            1 => {
+                let mut panes = panes;
+                Some(Member::Pane(panes.remove(0)))
+            }
+            _ => Some(Member::Stack(PaneStack::new(panes, active))),
+        }
+    }
+
+    /// Return the visible pane for a leaf-like member. Panics on
+    /// [`Member::Axis`] — sites that walk an axis must descend explicitly;
+    /// this helper exists for match arms that genuinely don't care
+    /// whether the leaf is a [`Member::Pane`] or a [`Member::Stack`]
+    /// (e.g. "which pane should we focus right now?").
+    pub fn active_pane(&self) -> &Entity<Pane> {
+        match self {
+            Member::Pane(pane) => pane,
+            Member::Stack(stack) => &stack.panes[stack.active],
+            Member::Axis(_) => panic!(
+                "Member::active_pane called on Axis; callers must descend the axis explicitly"
+            ),
+        }
+    }
+
     pub fn mark_positions(&mut self, in_center_group: bool, cx: &mut App) {
         match self {
             Member::Axis(pane_axis) => {
@@ -304,12 +446,20 @@ impl Member {
             Member::Pane(entity) => entity.update(cx, |pane, _| {
                 pane.in_center_group = in_center_group;
             }),
+            Member::Stack(stack) => {
+                for pane in stack.panes.iter() {
+                    pane.update(cx, |pane, _| {
+                        pane.in_center_group = in_center_group;
+                    });
+                }
+            }
         }
     }
 
     fn full_height_column_count(&self) -> usize {
         match self {
             Member::Pane(_) => 1,
+            Member::Stack(_) => 1,
             Member::Axis(axis) => axis.full_height_column_count(),
         }
     }
@@ -514,6 +664,7 @@ impl Member {
         match self {
             Member::Axis(axis) => axis.members[0].first_pane(),
             Member::Pane(pane) => pane.clone(),
+            Member::Stack(stack) => stack.panes[stack.active].clone(),
         }
     }
 
@@ -521,6 +672,7 @@ impl Member {
         match self {
             Member::Axis(axis) => axis.members.last().unwrap().last_pane(),
             Member::Pane(pane) => pane.clone(),
+            Member::Stack(stack) => stack.panes[stack.active].clone(),
         }
     }
 
@@ -570,6 +722,20 @@ impl Member {
                 }
             }
             Member::Axis(axis) => axis.render(basis + 1, zoomed, render_cx, window, cx),
+            // Foundation only: render the visible member without the
+            // tab strip. The strip + click-to-switch ships in
+            // `TASK:phase-19/stacked-panes-render`; until then the
+            // stack behaves visually like the active pane on its own.
+            Member::Stack(stack) => {
+                let active = match stack.panes.get(stack.active) {
+                    Some(pane) => pane,
+                    None => return PaneRenderResult {
+                        element: div().into_any(),
+                        contains_active_pane: false,
+                    },
+                };
+                Member::Pane(active.clone()).render(basis + 1, zoomed, render_cx, window, cx)
+            }
         }
     }
 
@@ -581,6 +747,14 @@ impl Member {
                 }
             }
             Member::Pane(pane) => panes.push(pane),
+            // Inactive members must still appear in `Workspace::panes`
+            // so their event subscriptions stay live and the cycle
+            // verb can switch to them in O(1).
+            Member::Stack(stack) => {
+                for pane in &stack.panes {
+                    panes.push(pane);
+                }
+            }
         }
     }
 
@@ -593,6 +767,7 @@ impl Member {
                 }
             }
             Self::Pane(_) => {}
+            Self::Stack(_) => {}
         }
     }
 }
@@ -662,6 +837,36 @@ impl PaneAxis {
                         return true;
                     }
                 }
+                Member::Stack(stack) => {
+                    if stack.panes.iter().any(|p| p == old_pane) {
+                        let surviving = collapse_stack_after_removing(stack, old_pane);
+                        let new_leaf = Member::Pane(new_pane.clone());
+                        match surviving {
+                            Some(surviving) => {
+                                if direction.axis() == self.axis {
+                                    *member = surviving;
+                                    if direction.increasing() {
+                                        idx += 1;
+                                    }
+                                    self.insert_pane(idx, new_pane);
+                                } else {
+                                    let pair = if direction.increasing() {
+                                        vec![surviving, new_leaf]
+                                    } else {
+                                        vec![new_leaf, surviving]
+                                    };
+                                    *member = Member::Axis(PaneAxis::new(direction.axis(), pair));
+                                }
+                            }
+                            // Stack invariant guarantees `surviving` is
+                            // `Some`; defensive fallback only.
+                            None => {
+                                *member = new_leaf;
+                            }
+                        }
+                        return true;
+                    }
+                }
             }
         }
         false
@@ -683,6 +888,7 @@ impl PaneAxis {
         };
         member.and_then(|e| match e {
             Member::Pane(pane) => Some(pane),
+            Member::Stack(stack) => stack.panes.get(stack.active),
             Member::Axis(_) => None,
         })
     }
@@ -705,6 +911,24 @@ impl PaneAxis {
                     if pane == pane_to_remove {
                         found_pane = true;
                         remove_member = Some(idx);
+                        break;
+                    }
+                }
+                Member::Stack(stack) => {
+                    if stack.panes.iter().any(|p| p == pane_to_remove) {
+                        match collapse_stack_after_removing(stack, pane_to_remove) {
+                            Some(surviving) => {
+                                *member = surviving;
+                                found_pane = true;
+                            }
+                            // Stack invariant guarantees a surviving
+                            // member; if it ever does not, drop the
+                            // slot entirely.
+                            None => {
+                                found_pane = true;
+                                remove_member = Some(idx);
+                            }
+                        }
                         break;
                     }
                 }
@@ -732,8 +956,10 @@ impl PaneAxis {
     fn reset_pane_sizes(&self) {
         *self.flexes.lock() = vec![1.; self.members.len()];
         for member in self.members.iter() {
-            if let Member::Axis(axis) = member {
-                axis.reset_pane_sizes();
+            match member {
+                Member::Axis(axis) => axis.reset_pane_sizes(),
+                Member::Pane(_) => {}
+                Member::Stack(_) => {}
             }
         }
     }
@@ -754,10 +980,13 @@ impl PaneAxis {
             .unwrap_or(*bounds)
             .size;
 
-        let found_pane = self
-            .members
-            .iter()
-            .any(|member| matches!(member, Member::Pane(p) if p == pane));
+        let found_pane = self.members.iter().any(|member| match member {
+            Member::Pane(p) => p == pane,
+            // The stack occupies a leaf slot; resizing targets that
+            // slot when the dragged pane is the stack's visible member.
+            Member::Stack(stack) => stack.panes.get(stack.active) == Some(pane),
+            Member::Axis(_) => false,
+        });
 
         if found_pane && self.axis != axis {
             return Some(false); // pane found but this is not the correct axis direction
@@ -787,12 +1016,10 @@ impl PaneAxis {
         let mut flexes = self.flexes.lock();
 
         let ix = if found_pane {
-            self.members.iter().position(|m| {
-                if let Member::Pane(p) = m {
-                    p == pane
-                } else {
-                    false
-                }
+            self.members.iter().position(|m| match m {
+                Member::Pane(p) => p == pane,
+                Member::Stack(stack) => stack.panes.get(stack.active) == Some(pane),
+                Member::Axis(_) => false,
             })
         } else {
             found_axis_index
@@ -859,6 +1086,15 @@ impl PaneAxis {
                         *member = Member::Pane(from.clone())
                     }
                 }
+                Member::Stack(stack) => {
+                    for pane in stack.panes.iter_mut() {
+                        if pane == from {
+                            *pane = to.clone();
+                        } else if pane == to {
+                            *pane = from.clone();
+                        }
+                    }
+                }
             }
         }
     }
@@ -870,6 +1106,11 @@ impl PaneAxis {
             match member {
                 Member::Pane(found) => {
                     if pane == found {
+                        return self.bounding_boxes.lock()[idx];
+                    }
+                }
+                Member::Stack(stack) => {
+                    if stack.panes.get(stack.active) == Some(pane) {
                         return self.bounding_boxes.lock()[idx];
                     }
                 }
@@ -894,6 +1135,7 @@ impl PaneAxis {
             {
                 return match member {
                     Member::Pane(found) => Some(found),
+                    Member::Stack(stack) => stack.panes.get(stack.active),
                     Member::Axis(axis) => axis.pane_at_pixel_position(coordinate),
                 };
             }
@@ -941,6 +1183,17 @@ impl PaneAxis {
                     Member::Pane(pane) => {
                         is_leaf_pane[ix] = true;
                         if pane == render_cx.active_pane() {
+                            active_pane_ix = Some(ix);
+                            active_subtree_ix = Some(ix);
+                            contains_active_pane = true;
+                        }
+                    }
+                    Member::Stack(stack) => {
+                        // A stack is a leaf slot at this axis level —
+                        // it occupies one cell whose visible content is
+                        // the active stack member.
+                        is_leaf_pane[ix] = true;
+                        if stack.panes.get(stack.active) == Some(render_cx.active_pane()) {
                             active_pane_ix = Some(ix);
                             active_subtree_ix = Some(ix);
                             contains_active_pane = true;

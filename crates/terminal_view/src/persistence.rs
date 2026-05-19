@@ -54,6 +54,15 @@ fn build_serialized_pane_group(
         Member::Pane(pane_handle) => {
             SerializedPaneGroup::Pane(serialize_pane(pane_handle, pane_handle == active_pane, cx))
         }
+        // Zed's on-disk pane-group shape predates `Member::Stack` and
+        // has no equivalent variant; degrade to the active stack member
+        // so terminal restore continues to work. The codon-side
+        // `LayoutSnapshot` path (see `workspace::codon_bridge`) handles
+        // the lossless round-trip.
+        Member::Stack(stack) => {
+            let active = &stack.panes[stack.active];
+            SerializedPaneGroup::Pane(serialize_pane(active, active == active_pane, cx))
+        }
     }
 }
 

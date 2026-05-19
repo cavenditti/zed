@@ -163,6 +163,14 @@ pub(crate) fn build_serialized_pane_layout(pane_group: &Member, cx: &App) -> Ser
             flexes: Some(flexes.lock().clone()),
         },
         Member::Pane(pane_handle) => SerializedPaneLayout::Pane(serialize_pane(pane_handle, cx)),
+        // The debugger pane-layout shape predates `Member::Stack`;
+        // degrade to the active member. Codon stacks live in the main
+        // center group, not in the debugger panel, so this branch is
+        // effectively unreachable in practice — handle it for type
+        // exhaustiveness.
+        Member::Stack(stack) => {
+            SerializedPaneLayout::Pane(serialize_pane(&stack.panes[stack.active], cx))
+        }
     }
 }
 

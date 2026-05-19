@@ -8781,6 +8781,45 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn test_stack_member_active_pane(cx: &mut TestAppContext) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, None, cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        // Materialise three real panes through the same workspace path
+        // production code uses, so their subscriptions are live.
+        let panes = workspace.update_in(cx, |workspace, window, cx| {
+            let first = workspace.active_pane().clone();
+            let second = workspace.add_pane(window, cx);
+            let third = workspace.add_pane(window, cx);
+            vec![first, second, third]
+        });
+
+        let stack =
+            Member::new_stack(panes.clone(), 1).expect("3-pane stack must materialise");
+        assert!(matches!(stack, Member::Stack(_)));
+        assert_eq!(
+            stack.active_pane().entity_id(),
+            panes[1].entity_id(),
+            "active_pane returns the indexed member"
+        );
+
+        // The collapse-to-Pane behaviour: a one-member "stack" is a
+        // plain `Member::Pane`, never an actual `Stack` variant.
+        let one =
+            Member::new_stack(vec![panes[0].clone()], 0).expect("one-pane stack collapses");
+        assert!(matches!(one, Member::Pane(_)), "single-member stack collapses");
+        assert_eq!(one.active_pane().entity_id(), panes[0].entity_id());
+
+        assert!(
+            Member::new_stack(vec![], 0).is_none(),
+            "empty stack is not representable"
+        );
+    }
+
+    #[gpui::test]
     async fn test_split_empty(cx: &mut TestAppContext) {
         for split_direction in SplitDirection::all() {
             test_single_pane_split(["A"], split_direction, SplitMode::EmptyPane, cx).await;
@@ -9078,6 +9117,7 @@ mod tests {
                 );
             }
             Member::Pane(_) => panic!("expected axis"),
+            Member::Stack(_) => panic!("expected axis, not stack"),
         });
     }
 

@@ -84,7 +84,7 @@ use notifications::{
 pub use pane::*;
 pub use pane_group::{
     ActivePaneDecorator, HANDLE_HITBOX_SIZE, Member, PaneAxis, PaneGroup, PaneRenderContext,
-    SplitDirection,
+    PaneStack, SplitDirection,
 };
 use persistence::{SerializedWindowBounds, model::SerializedWorkspace};
 pub use persistence::{
@@ -6816,6 +6816,58 @@ impl Workspace {
         })
     }
 
+    /// Codon-only: replace the workspace's center group with `snapshot`.
+    /// Unlike [`replace_center_with_snapshot`], this path knows about
+    /// [`crate::codon_bridge::LayoutSnapshot::Stack`] and reconstructs a
+    /// [`Member::Stack`] without degrading to the active member —
+    /// inactive panes survive the round-trip and stay available for
+    /// instant cycle.
+    pub fn replace_center_with_layout_snapshot(
+        &mut self,
+        snapshot: crate::codon_bridge::LayoutSnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let Some(database_id) = self.database_id() else {
+            return Task::ready(Err(anyhow!(
+                "workspace has no database id; cannot swap center group"
+            )));
+        };
+        cx.spawn_in(window, async move |workspace, cx| {
+            let project = workspace.read_with(cx, |w, _| w.project().clone())?;
+            let result = crate::codon_bridge::deserialize_layout_snapshot(
+                snapshot,
+                &project,
+                database_id,
+                workspace.clone(),
+                cx,
+            )
+            .await;
+            workspace.update_in(cx, |workspace, window, cx| {
+                let (new_root, active_pane) = match result {
+                    Some((root, active, _items)) => (root, active),
+                    None => {
+                        let new_pane = workspace.add_pane(window, cx);
+                        (Member::Pane(new_pane.clone()), Some(new_pane))
+                    }
+                };
+                let old_root = workspace.center.root.clone();
+                workspace.remove_panes(old_root, window, cx);
+                workspace.center = PaneGroup::with_root(new_root);
+                workspace.center.set_is_center(true);
+                workspace.center.mark_positions(cx);
+                if let Some(active_pane) = active_pane {
+                    workspace.set_active_pane(&active_pane, window, cx);
+                    cx.focus_self(window);
+                } else {
+                    workspace.set_active_pane(&workspace.center.first_pane(), window, cx);
+                }
+                cx.notify();
+                Ok(())
+            })?
+        })
+    }
+
     /// Codon-only: trigger a synchronous workspace serialization (writing
     /// every `SerializableItem`'s state to its respective DB) and return a
     /// task that resolves once the writes are scheduled. Awaiting the task
@@ -7007,6 +7059,11 @@ impl Workspace {
             Member::Pane(pane) => {
                 self.force_remove_pane(&pane, &None, window, cx);
             }
+            Member::Stack(stack) => {
+                for pane in stack.panes {
+                    self.force_remove_pane(&pane, &None, window, cx);
+                }
+            }
         }
     }
 
@@ -7111,6 +7168,14 @@ impl Workspace {
                 },
                 Member::Pane(pane_handle) => {
                     SerializedPaneGroup::Pane(serialize_pane_handle(pane_handle, window, cx))
+                }
+                // The on-disk `SerializedPaneGroup` shape predates stacks
+                // and has no Stack variant; degrade to the active stack
+                // member. The full round-trip lives in the codon-side
+                // `LayoutSnapshot` path (see `codon_bridge::apply_layout`).
+                Member::Stack(stack) => {
+                    let active_pane = &stack.panes[stack.active];
+                    SerializedPaneGroup::Pane(serialize_pane_handle(active_pane, window, cx))
                 }
             }
         }
@@ -8644,6 +8709,11 @@ fn codon_collect_pane_ids(member: &Member, out: &mut HashSet<EntityId>) {
         Member::Pane(pane) => {
             out.insert(pane.entity_id());
         }
+        Member::Stack(stack) => {
+            for pane in &stack.panes {
+                out.insert(pane.entity_id());
+            }
+        }
         Member::Axis(axis) => {
             for child in &axis.members {
                 codon_collect_pane_ids(child, out);
@@ -8660,6 +8730,13 @@ fn codon_collect_panes(member: &Member, out: &mut Vec<Entity<Pane>>) {
         Member::Pane(pane) => {
             if !out.iter().any(|p| p.entity_id() == pane.entity_id()) {
                 out.push(pane.clone());
+            }
+        }
+        Member::Stack(stack) => {
+            for pane in &stack.panes {
+                if !out.iter().any(|p| p.entity_id() == pane.entity_id()) {
+                    out.push(pane.clone());
+                }
             }
         }
         Member::Axis(axis) => {
