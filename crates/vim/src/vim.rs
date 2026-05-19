@@ -17,6 +17,7 @@ mod normal;
 mod object;
 mod replace;
 mod rewrap;
+pub mod shell;
 pub mod state;
 mod surrounds;
 mod visual;
@@ -996,6 +997,7 @@ impl Vim {
             visual::register(editor, cx);
             change_list::register(editor, cx);
             digraph::register(editor, cx);
+            shell::register(editor, cx);
 
             if editor.is_focused(window) {
                 cx.defer_in(window, |vim, window, cx| {
