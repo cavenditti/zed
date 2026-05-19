@@ -276,6 +276,36 @@ pub fn capture_arc(workspace: &Workspace, window: &mut Window, cx: &mut App) -> 
     Arc::new(capture_layout(workspace, window, cx))
 }
 
+/// Callback fired at the end of [`Workspace::restore_center_root`] when
+/// the codon-session crate has installed a trace recorder. The first
+/// argument is the wall-clock duration of the restore in milliseconds;
+/// the second is the count of previously-unseen panes that the restore
+/// attached to the workspace (used by the harness to correlate
+/// retained-vs-new pane budgets).
+///
+/// Wired through a function pointer so the vendored crate does not have
+/// to import the codon trace types — the codon-session crate installs
+/// the callback during its `init` and forwards into
+/// `file_manager::record_switch_timing`.
+pub type CodonRestoreTimingFn = fn(restore_ms: f32, new_pane_count: u32);
+
+static CODON_RESTORE_TIMING_CB: OnceLock<CodonRestoreTimingFn> = OnceLock::new();
+
+/// Install the restore-timing callback. Idempotent: the first install
+/// wins so a re-`init` (e.g. in tests) does not overwrite the active
+/// recorder.
+pub fn set_restore_timing_callback(cb: CodonRestoreTimingFn) {
+    let _ = CODON_RESTORE_TIMING_CB.set(cb);
+}
+
+/// Notify the installed restore-timing callback (if any). Called from
+/// `Workspace::restore_center_root`.
+pub fn notify_restore_timing(restore_ms: f32, new_pane_count: u32) {
+    if let Some(cb) = CODON_RESTORE_TIMING_CB.get() {
+        cb(restore_ms, new_pane_count);
+    }
+}
+
 /// Pixel bounds of the workspace's currently active center pane.
 ///
 /// Returns `None` before the first layout pass has measured the pane (the

@@ -6870,6 +6870,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let started = std::time::Instant::now();
         let mut old_pane_ids: HashSet<EntityId> = HashSet::default();
         codon_collect_pane_ids(&self.center.root, &mut old_pane_ids);
         self.panes
@@ -6877,9 +6878,11 @@ impl Workspace {
 
         let mut new_panes: Vec<Entity<Pane>> = Vec::new();
         codon_collect_panes(&new_root, &mut new_panes);
+        let mut new_pane_count: u32 = 0;
         for pane in &new_panes {
             if !self.panes.iter().any(|p| p.entity_id() == pane.entity_id()) {
                 self.panes.push(pane.clone());
+                new_pane_count += 1;
             }
         }
 
@@ -6915,6 +6918,9 @@ impl Workspace {
         }
 
         cx.notify();
+
+        let restore_ms = started.elapsed().as_secs_f64() as f32 * 1000.0;
+        crate::codon_bridge::notify_restore_timing(restore_ms, new_pane_count);
     }
 
     fn save_window_bounds(&self, window: &mut Window, cx: &mut App) -> Task<()> {
