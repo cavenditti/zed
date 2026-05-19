@@ -131,6 +131,22 @@ pub fn capture_layout(
     capture_member(&workspace.center.root, window, cx)
 }
 
+/// Capture a [`LayoutSnapshot`] directly from a `Member` tree that is
+/// not currently attached to a workspace (e.g. the cached `Member`
+/// inside codon's `WindowRuntimeCache`). Behaves identically to
+/// [`capture_layout`] but skips the `workspace.center.root` indirection.
+///
+/// Used by `c-skip-capture-on-cache-hit` to materialize a fresh
+/// `LayoutSnapshot` from a runtime-cache entry on eviction / detach /
+/// shutdown.
+pub fn capture_from_member(
+    member: &Member,
+    window: &mut Window,
+    cx: &mut App,
+) -> LayoutSnapshot {
+    capture_member(member, window, cx)
+}
+
 fn capture_member(member: &Member, window: &mut Window, cx: &mut App) -> LayoutSnapshot {
     match member {
         Member::Axis(axis) => capture_axis(axis, window, cx),
