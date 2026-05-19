@@ -4,6 +4,7 @@
 mod test;
 
 mod change_list;
+pub mod codon_jumplist;
 mod command;
 mod digraph;
 mod helix;
