@@ -181,14 +181,24 @@ pub enum ObjectKind {
     Message,
 }
 
-/// Registry mapping action types to the ObjectKinds they accept.
+/// Registry mapping action types to the ObjectKinds they accept and
+/// (optionally) the ObjectKind they *produce*.
 ///
-/// - Actions with no entry: accept any selection (shown always)
-/// - Actions with empty accepts: nullary verbs (shown always)
-/// - Actions with specific kinds: shown only when selection matches
+/// - Actions with no `accepts` entry: accept any selection (shown always).
+/// - Actions with empty `accepts`: nullary verbs (shown always).
+/// - Actions with specific kinds: shown only when selection matches.
+///
+/// `produces` is codon's selection-registers extension — verbs that
+/// *create* a selection (yank, mark-set, select-by-pattern) declare
+/// the [`ObjectKind`] they output so the `"<char>` register-prefix
+/// dispatcher knows when to route the verb's output into a named
+/// register. Verbs that don't produce a selection (the common case)
+/// have no `produces` entry; checking [`Self::produces`] returns
+/// `None` for them.
 #[derive(Default)]
 pub struct ActionAcceptsRegistry {
     accepts: collections::HashMap<TypeId, &'static [ObjectKind]>,
+    produces: collections::HashMap<TypeId, ObjectKind>,
 }
 
 impl Global for ActionAcceptsRegistry {}
@@ -197,6 +207,17 @@ impl ActionAcceptsRegistry {
     /// Register an action type with the ObjectKinds it accepts.
     pub fn register<A: Action>(&mut self, accepts: &'static [ObjectKind]) {
         self.accepts.insert(TypeId::of::<A>(), accepts);
+    }
+
+    /// Register an action type as a *selection producer* — output kind
+    /// is the [`ObjectKind`] the verb writes when the user has armed a
+    /// register with `"<char>`. Selection-producing verbs typically
+    /// also call `register::<A>(...)` if they accept a selection
+    /// themselves (yank both reads its input selection and writes a
+    /// new one); fully one-way producers (mark-set, select-by-pattern)
+    /// only need this call.
+    pub fn register_produces<A: Action>(&mut self, kind: ObjectKind) {
+        self.produces.insert(TypeId::of::<A>(), kind);
     }
 
     /// Check if an action is applicable for the given selection kind.
@@ -218,5 +239,12 @@ impl ActionAcceptsRegistry {
                 }
             }
         }
+    }
+
+    /// What [`ObjectKind`] does this action produce, if any? `None`
+    /// means the verb is not a selection producer — armed register
+    /// writes don't apply.
+    pub fn produces(&self, action_type_id: TypeId) -> Option<ObjectKind> {
+        self.produces.get(&action_type_id).copied()
     }
 }
