@@ -6878,9 +6878,16 @@ impl Workspace {
 
         let mut new_panes: Vec<Entity<Pane>> = Vec::new();
         codon_collect_panes(&new_root, &mut new_panes);
+        // O(N+M) merge: single O(M) hash-set build of the existing pane
+        // entity ids, then a single O(N) pass over the incoming vec.
+        // `HashSet::insert` returns true on first sight, so it doubles as
+        // the "push this one" predicate. Replaces an earlier
+        // `panes.iter().any(...)` inner loop that was O(N*M).
+        let mut existing_ids: HashSet<EntityId> =
+            self.panes.iter().map(|p| p.entity_id()).collect();
         let mut new_pane_count: u32 = 0;
         for pane in &new_panes {
-            if !self.panes.iter().any(|p| p.entity_id() == pane.entity_id()) {
+            if existing_ids.insert(pane.entity_id()) {
                 self.panes.push(pane.clone());
                 new_pane_count += 1;
             }
