@@ -542,6 +542,28 @@ impl<'a, T: 'static> Context<'a, T> {
         subscription
     }
 
+    /// Register a callback to be invoked when the window's keystroke matcher
+    /// reaches a terminal-but-empty state — either an unmapped fresh keystroke
+    /// or a chord-prefix timeout with no bound continuation. The callback is
+    /// invoked once per dead-end occurrence; subscribers handle any coalescing
+    /// they need on their own (e.g. a single flash for a held key).
+    pub fn observe_keystroke_dead_end(
+        &self,
+        window: &mut Window,
+        mut callback: impl FnMut(&mut T, &mut Window, &mut Context<T>) + 'static,
+    ) -> Subscription {
+        let view = self.weak_entity();
+        let (subscription, activate) = window.keystroke_dead_end_observers.insert(
+            (),
+            Box::new(move |window, cx| {
+                view.update(cx, |view, cx| callback(view, window, cx))
+                    .is_ok()
+            }),
+        );
+        activate();
+        subscription
+    }
+
     /// Register a listener to be called when the given focus handle receives focus.
     /// Returns a subscription and persists until the subscription is dropped.
     pub fn on_focus(

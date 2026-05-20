@@ -1033,6 +1033,11 @@ pub struct Window {
     pending_input: Option<PendingInput>,
     pending_modifier: ModifierState,
     pub(crate) pending_input_observers: SubscriberSet<(), AnyObserver>,
+    /// Observers invoked when the keystroke matcher reaches a terminal-but-empty
+    /// state — either an unmapped fresh keystroke that produced no bindings, or
+    /// a chord-prefix timeout that flushed without any binding firing. Codon's
+    /// status bar uses this to surface a brief colour flash.
+    pub(crate) keystroke_dead_end_observers: SubscriberSet<(), AnyObserver>,
     prompt: Option<RenderablePromptHandle>,
     pub(crate) client_inset: Option<Pixels>,
     /// The hitbox that has captured the pointer, if any.
@@ -1641,6 +1646,7 @@ impl Window {
             pending_input: None,
             pending_modifier: ModifierState::default(),
             pending_input_observers: SubscriberSet::new(),
+            keystroke_dead_end_observers: SubscriberSet::new(),
             prompt: None,
             client_inset: None,
             image_cache_stack: Vec::new(),
@@ -4522,6 +4528,20 @@ impl Window {
             &dispatch_path,
         );
 
+        // A keystroke matcher state is "potentially a dead end" when no
+        // binding fired and no chord is pending: no pending continuation,
+        // no bindings to dispatch now, and no replays carrying any bound
+        // action. We resolve this to a *true* dead end further down — only
+        // after we know the focused element didn't consume the key as
+        // text input. That filters out plain typing in editors / inputs,
+        // which would otherwise flash on every character.
+        let matcher_unproductive = match_result.bindings.is_empty()
+            && match_result.pending.is_empty()
+            && match_result
+                .to_replay
+                .iter()
+                .all(|replay| replay.bindings.is_empty());
+
         if !match_result.to_replay.is_empty() {
             self.replay_pending_input(match_result.to_replay, cx);
             cx.propagate_event = true;
@@ -4567,8 +4587,14 @@ impl Window {
                             .dispatch_tree
                             .flush_dispatch(currently_pending.keystrokes, &dispatch_path);
 
+                        let timeout_dead_end =
+                            to_replay.iter().all(|replay| replay.bindings.is_empty());
+
                         window.pending_input_changed(cx);
-                        window.replay_pending_input(to_replay, cx)
+                        window.replay_pending_input(to_replay, cx);
+                        if timeout_dead_end {
+                            window.keystroke_dead_end(cx);
+                        }
                     })
                     .log_err();
                 }));
@@ -4614,6 +4640,14 @@ impl Window {
         }
 
         self.finish_dispatch_key_event(event, dispatch_path, match_result.context_stack, cx);
+        // Resolve the dead-end signal here, not earlier: by this point any
+        // focused text-input handler has run via `dispatch_key_down_up_event`
+        // and set `cx.propagate_event = false` if it consumed the key. So
+        // `matcher_unproductive && propagate_event` is "matcher had nothing
+        // AND nothing else consumed it either" — a true dead end.
+        if matcher_unproductive && cx.propagate_event {
+            self.keystroke_dead_end(cx);
+        }
         self.pending_input_changed(cx);
     }
 
@@ -4639,6 +4673,16 @@ impl Window {
 
     pub(crate) fn pending_input_changed(&mut self, cx: &mut App) {
         self.pending_input_observers
+            .clone()
+            .retain(&(), |callback| callback(self, cx));
+    }
+
+    /// Notify subscribers that the keystroke matcher reached a dead end —
+    /// either an unmapped fresh keystroke or a chord-prefix timeout without
+    /// a bound completion. Coalescing (e.g. ignoring rapid repeats) is the
+    /// subscriber's responsibility; this fires once per dead-end occurrence.
+    pub(crate) fn keystroke_dead_end(&mut self, cx: &mut App) {
+        self.keystroke_dead_end_observers
             .clone()
             .retain(&(), |callback| callback(self, cx));
     }
