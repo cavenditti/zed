@@ -7,7 +7,7 @@ use cocoa::{
         NSFilenamesPboardType, NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString,
         NSPasteboardTypeTIFF,
     },
-    base::{id, nil},
+    base::{BOOL, id, nil},
     foundation::{NSArray, NSData, NSFastEnumeration, NSString},
 };
 use objc::{msg_send, runtime::Object, sel, sel_impl};
@@ -175,33 +175,50 @@ impl Pasteboard {
                 [ClipboardEntry::Image(image)] => {
                     self.write_image(image);
                 }
-                [ClipboardEntry::ExternalPaths(_)] => {}
+                [ClipboardEntry::ExternalPaths(paths)] => {
+                    self.inner.clearContents();
+                    if !paths.0.is_empty() {
+                        self.write_filenames(&paths.0);
+                    }
+                }
                 _ => {
-                    // Agus NB: We're currently only writing string entries to the clipboard when we have more than one.
-                    //
-                    // This was the existing behavior before I refactored the outer clipboard code:
-                    // https://github.com/zed-industries/zed/blob/65f7412a0265552b06ce122655369d6cc7381dd6/crates/gpui/src/platform/mac/platform.rs#L1060-L1110
-                    //
-                    // Note how `any_images` is always `false`. We should fix that, but that's orthogonal to the refactor.
-
+                    // Multi-entry write: publish every supported surface so
+                    // each pasting app picks up the form it understands.
+                    // File-aware apps (Finder) consume the filenames property
+                    // list; everything else falls through to the concatenated
+                    // string entries. Images in a multi-entry item are still
+                    // skipped — same as the pre-refactor behavior, since the
+                    // pasteboard can only host one image at a time anyway.
+                    let mut filenames: Option<&[PathBuf]> = None;
                     let mut combined = ClipboardString {
                         text: String::new(),
                         metadata: None,
                     };
 
-                    for entry in item.entries {
+                    for entry in &item.entries {
                         match entry {
                             ClipboardEntry::String(text) => {
-                                combined.text.push_str(&text.text());
+                                combined.text.push_str(&text.text);
                                 if combined.metadata.is_none() {
-                                    combined.metadata = text.metadata;
+                                    combined.metadata = text.metadata.clone();
+                                }
+                            }
+                            ClipboardEntry::ExternalPaths(paths) if filenames.is_none() => {
+                                if !paths.0.is_empty() {
+                                    filenames = Some(&paths.0);
                                 }
                             }
                             _ => {}
                         }
                     }
 
-                    self.write_plaintext(&combined);
+                    self.inner.clearContents();
+                    if let Some(paths) = filenames {
+                        self.write_filenames(paths);
+                    }
+                    if !combined.text.is_empty() || combined.metadata.is_some() {
+                        self.write_plaintext_data(&combined);
+                    }
                 }
             }
         }
@@ -210,7 +227,12 @@ impl Pasteboard {
     fn write_plaintext(&self, string: &ClipboardString) {
         unsafe {
             self.inner.clearContents();
+            self.write_plaintext_data(string);
+        }
+    }
 
+    unsafe fn write_plaintext_data(&self, string: &ClipboardString) {
+        unsafe {
             let text_bytes = NSData::dataWithBytes_length_(
                 nil,
                 string.text.as_ptr() as *const c_void,
@@ -236,6 +258,20 @@ impl Pasteboard {
                 self.inner
                     .setData_forType(metadata_bytes, self.metadata_type);
             }
+        }
+    }
+
+    unsafe fn write_filenames(&self, paths: &[PathBuf]) {
+        unsafe {
+            let ns_strings: Vec<id> = paths
+                .iter()
+                .map(|p| ns_string(&p.to_string_lossy()))
+                .collect();
+            let array = NSArray::arrayWithObjects(nil, &ns_strings);
+            // setPropertyList:forType: returns BOOL — false means another
+            // owner won the pasteboard race. There's nothing we can do
+            // about it from here, so the return is intentionally dropped.
+            let _wrote: BOOL = self.inner.setPropertyList_forType(array, NSFilenamesPboardType);
         }
     }
 
