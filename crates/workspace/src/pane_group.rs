@@ -436,6 +436,21 @@ impl Member {
         }
     }
 
+    /// `true` when at least one leaf pane reachable from this member
+    /// holds an item. Codon's window indicator/picker/overview use this
+    /// to decide whether a stashed window-runtime is "non-empty" — the
+    /// persisted `LayoutSnapshot` lags the live tree on the cache-hit
+    /// fast path, so consulting `Member` directly is the only way to
+    /// avoid a stale "non-empty" reading right after the user closes
+    /// every tab in a window and cycles away.
+    pub fn has_any_items(&self, cx: &App) -> bool {
+        match self {
+            Member::Pane(pane) => pane.read(cx).items_len() > 0,
+            Member::Axis(axis) => axis.members.iter().any(|m| m.has_any_items(cx)),
+            Member::Stack(stack) => stack.panes.iter().any(|p| p.read(cx).items_len() > 0),
+        }
+    }
+
     pub fn mark_positions(&mut self, in_center_group: bool, cx: &mut App) {
         match self {
             Member::Axis(pane_axis) => {

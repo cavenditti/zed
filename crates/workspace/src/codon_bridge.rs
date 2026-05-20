@@ -88,6 +88,22 @@ impl LayoutSnapshot {
         })
     }
 
+    /// `true` when at least one leaf pane in this snapshot has an item.
+    /// An "empty" snapshot is the canonical post-`replace_center_with_empty_pane`
+    /// shape — a single pane with no items — produced when the user
+    /// closes every tab in a window.
+    pub fn has_any_items(&self) -> bool {
+        match self {
+            LayoutSnapshot::Pane(p) => !p.items.is_empty(),
+            LayoutSnapshot::Group { children, .. } => {
+                children.iter().any(Self::has_any_items)
+            }
+            LayoutSnapshot::Stack { members, .. } => {
+                members.iter().any(Self::has_any_items)
+            }
+        }
+    }
+
     /// Lower a `LayoutSnapshot::Pane` to the on-disk `SerializedPane`
     /// form so it can ride the existing `SerializedPaneGroup::deserialize`
     /// machinery for item rehydration.
