@@ -2,7 +2,12 @@ use std::{
     fs::File,
     io::{ErrorKind, Write},
     os::fd::{AsRawFd, BorrowedFd, OwnedFd},
+    path::PathBuf,
 };
+
+use smallvec::SmallVec;
+use url::Url;
+use util::ResultExt as _;
 
 use calloop::{LoopHandle, PostAction};
 use filedescriptor::Pipe;
@@ -11,7 +16,7 @@ use wayland_client::{Connection, protocol::wl_data_offer::WlDataOffer};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1;
 
 use crate::linux::{WaylandClientStatePtr, platform::read_fd};
-use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat, hash};
+use gpui::{ClipboardEntry, ClipboardItem, ExternalPaths, Image, ImageFormat, hash};
 
 /// Text mime types that we'll offer to other programs.
 pub(crate) const TEXT_MIME_TYPES: [&str; 3] =
@@ -133,6 +138,21 @@ impl<T: ReceiveData> DataOffer<T> {
         }
         None
     }
+
+    fn read_uri_list(&self, connection: &Connection) -> Option<ClipboardItem> {
+        if !self.has_mime_type(FILE_LIST_MIME_TYPE) {
+            return None;
+        }
+        let bytes = self.read_bytes(connection, FILE_LIST_MIME_TYPE)?;
+        let text = String::from_utf8(bytes).log_err()?;
+        let paths = parse_uri_list(&text);
+        if paths.is_empty() {
+            return None;
+        }
+        Some(ClipboardItem {
+            entries: vec![ClipboardEntry::ExternalPaths(ExternalPaths(paths))],
+        })
+    }
 }
 
 impl Clipboard {
@@ -177,13 +197,29 @@ impl Clipboard {
         self.self_mime.clone()
     }
 
-    pub fn send(&self, _mime_type: String, fd: OwnedFd) {
+    pub fn send(&self, mime_type: String, fd: OwnedFd) {
+        if mime_type == FILE_LIST_MIME_TYPE {
+            if let Some(bytes) = self.contents.as_ref().and_then(serialize_uri_list) {
+                self.send_internal(fd, bytes);
+            }
+            return;
+        }
         if let Some(text) = self.contents.as_ref().and_then(|contents| contents.text()) {
             self.send_internal(fd, text.as_bytes().to_owned());
         }
     }
 
-    pub fn send_primary(&self, _mime_type: String, fd: OwnedFd) {
+    pub fn send_primary(&self, mime_type: String, fd: OwnedFd) {
+        if mime_type == FILE_LIST_MIME_TYPE {
+            if let Some(bytes) = self
+                .primary_contents
+                .as_ref()
+                .and_then(serialize_uri_list)
+            {
+                self.send_internal(fd, bytes);
+            }
+            return;
+        }
         if let Some(text) = self
             .primary_contents
             .as_ref()
@@ -204,7 +240,8 @@ impl Clipboard {
         }
 
         let item = offer
-            .read_text(&self.connection)
+            .read_uri_list(&self.connection)
+            .or_else(|| offer.read_text(&self.connection))
             .or_else(|| offer.read_image(&self.connection))?;
 
         self.cached_read = Some(item.clone());
@@ -222,7 +259,8 @@ impl Clipboard {
         }
 
         let item = offer
-            .read_text(&self.connection)
+            .read_uri_list(&self.connection)
+            .or_else(|| offer.read_text(&self.connection))
             .or_else(|| offer.read_image(&self.connection))?;
 
         self.cached_primary_read = Some(item.clone());
@@ -257,4 +295,42 @@ impl Clipboard {
             )
             .unwrap();
     }
+}
+
+/// True iff `item` carries at least one non-empty `ExternalPaths` entry.
+/// Callers use this to decide whether to advertise `text/uri-list` on
+/// the `wl_data_source` they create.
+pub(crate) fn item_has_external_paths(item: &ClipboardItem) -> bool {
+    item.entries().iter().any(|entry| {
+        matches!(entry, ClipboardEntry::ExternalPaths(paths) if !paths.0.is_empty())
+    })
+}
+
+fn serialize_uri_list(item: &ClipboardItem) -> Option<Vec<u8>> {
+    let mut buffer = String::new();
+    for entry in item.entries() {
+        if let ClipboardEntry::ExternalPaths(paths) = entry {
+            for path in &paths.0 {
+                let Ok(url) = Url::from_file_path(path) else {
+                    continue;
+                };
+                buffer.push_str(url.as_str());
+                buffer.push_str("\r\n");
+            }
+        }
+    }
+    if buffer.is_empty() {
+        None
+    } else {
+        Some(buffer.into_bytes())
+    }
+}
+
+fn parse_uri_list(text: &str) -> SmallVec<[PathBuf; 2]> {
+    text.lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| Url::parse(line).log_err())
+        .filter_map(|url| url.to_file_path().ok())
+        .collect()
 }
