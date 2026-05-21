@@ -128,9 +128,17 @@ fn make_word_candidate(
         let handle = view.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         view.update(cx, |view, cx| {
-            view.terminal().update(cx, |terminal, _cx| {
+            view.terminal().update(cx, |terminal, cx| {
                 terminal.select_word_at_cell(cell);
+                // `select_word_at_cell` enqueues an `InternalEvent::SetSelection`
+                // that only drains on the terminal's next `sync` pass.
+                // Without an explicit notify, the focus change above
+                // does not always trigger a repaint of the terminal —
+                // the selection then sits invisible until something
+                // else dirties the view, so the jump looks like a no-op.
+                cx.notify();
             });
+            cx.notify();
         });
     });
     JumpCandidate {

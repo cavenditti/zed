@@ -11,7 +11,8 @@
 //! The codon-jump overlay re-exports [`take_clickables`] and the
 //! [`JumpClickableExt`] trait from this module.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,21 +30,23 @@ pub type ClickableAction = Arc<dyn Fn(&mut Window, &mut App) + 'static>;
 
 thread_local! {
     static CLICKABLE_REGISTRY: RefCell<Vec<ClickableEntry>> = const { RefCell::new(Vec::new()) };
-    /// Wall-clock time of the most recent `JumpClickable::paint`. Used to
-    /// detect frame boundaries: paints within the same frame happen in
-    /// microseconds of each other, so a gap larger than
-    /// `FRAME_RESET_THRESHOLD` means we've entered a new frame and the
-    /// registry should be cleared before the next push.
-    static LAST_PUSH_AT: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
 /// Anything older than this on drain is dropped — covers windows where
 /// the application stopped painting (sleep, hidden window) but the
-/// registry still holds stale entries.
+/// registry still holds stale entries. Two paint cycles at 60 Hz is
+/// ~33 ms, so 250 ms also tolerates a few skipped frames without losing
+/// a still-visible clickable.
 const ENTRY_FRESHNESS: Duration = Duration::from_millis(250);
-/// Gap between consecutive `paint` calls that marks a new frame. Same
-/// frame paints share microseconds; >5ms means a frame boundary.
-const FRAME_RESET_THRESHOLD: Duration = Duration::from_millis(5);
+
+/// Soft cap on registry size. When exceeded, the push path evicts every
+/// entry older than [`ENTRY_FRESHNESS`] before appending. This bounds
+/// memory growth when the overlay is never opened without needing a
+/// frame-boundary signal we can't reliably synthesize from inside paint.
+/// Bound math: with ~50 clickables per frame at 60 Hz, one freshness
+/// window holds ~750 entries; 10 000 buys 200 ms of slack before the
+/// soft-cap path runs.
+const SOFT_CAP: usize = 10_000;
 
 #[derive(Clone)]
 struct ClickableEntry {
@@ -52,17 +55,54 @@ struct ClickableEntry {
     painted_at: Instant,
 }
 
-/// Drain every clickable entry registered on the current frame and
-/// return them as `(bounds, on_click)` pairs. Called by the codon-jump
-/// overlay on activation; subsequent paint passes refill the registry.
+/// Drain every still-fresh clickable entry and return them as
+/// `(bounds, on_click)` pairs, deduplicated so re-paints across the
+/// freshness window only contribute one entry per visual element.
+///
+/// Why dedup here rather than wipe between frames: the registry is
+/// refilled on every paint, but we can't observe paint-pass boundaries
+/// from inside `JumpClickable::paint` without a Window-level hook. So
+/// each frame appends and `take_clickables` collapses duplicates by
+/// the bounds rectangle. The most-recently-painted entry for each
+/// rectangle wins (so the freshest closure handle is the one the
+/// overlay calls).
 pub fn take_clickables() -> Vec<(Bounds<Pixels>, ClickableAction)> {
     CLICKABLE_REGISTRY.with(|cell| {
-        cell.borrow_mut()
-            .drain(..)
-            .filter(|entry| entry.painted_at.elapsed() < ENTRY_FRESHNESS)
+        let drained: Vec<ClickableEntry> = cell.borrow_mut().drain(..).collect();
+        let mut latest_for_key: HashMap<BoundsKey, ClickableEntry> = HashMap::new();
+        for entry in drained.into_iter() {
+            if entry.painted_at.elapsed() >= ENTRY_FRESHNESS {
+                continue;
+            }
+            latest_for_key.insert(BoundsKey::from(&entry.bounds), entry);
+        }
+        latest_for_key
+            .into_values()
             .map(|entry| (entry.bounds, entry.on_click))
             .collect()
     })
+}
+
+/// Pixel-rounded bounds key used to dedupe re-paints across the
+/// freshness window. Sub-pixel jitter from layout is collapsed onto a
+/// whole-pixel grid so two paints of the same element key the same.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct BoundsKey {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+impl From<&Bounds<Pixels>> for BoundsKey {
+    fn from(bounds: &Bounds<Pixels>) -> Self {
+        Self {
+            x: f32::from(bounds.origin.x).round() as i32,
+            y: f32::from(bounds.origin.y).round() as i32,
+            w: f32::from(bounds.size.width).round() as i32,
+            h: f32::from(bounds.size.height).round() as i32,
+        }
+    }
 }
 
 /// Number of clickables currently registered. Test/debug helper.
@@ -75,24 +115,21 @@ pub fn clickable_registry_len() -> usize {
 #[doc(hidden)]
 pub fn clear_clickable_registry() {
     CLICKABLE_REGISTRY.with(|cell| cell.borrow_mut().clear());
-    LAST_PUSH_AT.with(|c| c.set(None));
 }
 
-/// Internal push used by `JumpClickable::paint`. Detects frame
-/// boundaries via `LAST_PUSH_AT` and clears the registry before the
-/// first push of a new frame — without this, every paint at 60 Hz
-/// would accumulate entries forever between modal opens.
+/// Internal push used by `JumpClickable::paint`. Appends unconditionally;
+/// `take_clickables` is the side that filters by freshness and dedups by
+/// bounds. The soft-cap branch evicts stale entries when the registry
+/// grows beyond [`SOFT_CAP`] — without this, an app that never opens the
+/// overlay would accumulate entries forever.
 fn push_clickable(entry: ClickableEntry) {
-    let now = entry.painted_at;
-    let crossed_frame_boundary = LAST_PUSH_AT.with(|c| match c.get() {
-        Some(previous) => now.saturating_duration_since(previous) > FRAME_RESET_THRESHOLD,
-        None => true,
+    CLICKABLE_REGISTRY.with(|cell| {
+        let mut registry = cell.borrow_mut();
+        if registry.len() >= SOFT_CAP {
+            registry.retain(|e| e.painted_at.elapsed() < ENTRY_FRESHNESS);
+        }
+        registry.push(entry);
     });
-    if crossed_frame_boundary {
-        CLICKABLE_REGISTRY.with(|cell| cell.borrow_mut().clear());
-    }
-    LAST_PUSH_AT.with(|c| c.set(Some(now)));
-    CLICKABLE_REGISTRY.with(|cell| cell.borrow_mut().push(entry));
 }
 
 /// Fluent extension that lets any element opt into the jump-clickable
@@ -244,19 +281,32 @@ mod tests {
         }
     }
 
-    fn push_now() {
+    fn push_at(bounds: Bounds<Pixels>) {
         push_clickable(ClickableEntry {
-            bounds: unit_bounds(),
+            bounds,
             on_click: Arc::new(|_, _| {}),
             painted_at: Instant::now(),
         });
+    }
+
+    fn shifted_bounds(dx: f32, dy: f32) -> Bounds<Pixels> {
+        Bounds {
+            origin: Point {
+                x: px(dx),
+                y: px(dy),
+            },
+            size: Size {
+                width: px(10.0),
+                height: px(10.0),
+            },
+        }
     }
 
     #[test]
     fn registry_drains_to_empty() {
         clear_clickable_registry();
         assert_eq!(clickable_registry_len(), 0);
-        push_now();
+        push_at(unit_bounds());
         assert_eq!(clickable_registry_len(), 1);
         let drained = take_clickables();
         assert_eq!(drained.len(), 1);
@@ -264,36 +314,79 @@ mod tests {
     }
 
     #[test]
-    fn push_after_frame_gap_clears_prior_entries() {
+    fn repeated_pushes_at_same_bounds_dedup_on_drain() {
         clear_clickable_registry();
-        push_now();
-        push_now();
-        assert_eq!(clickable_registry_len(), 2);
-        // Simulate a frame boundary: backdate LAST_PUSH_AT well past
-        // `FRAME_RESET_THRESHOLD` so the next push triggers a clear.
-        let backdated = Instant::now() - FRAME_RESET_THRESHOLD - Duration::from_millis(20);
-        LAST_PUSH_AT.with(|c| c.set(Some(backdated)));
-        push_now();
-        assert_eq!(clickable_registry_len(), 1);
+        // Simulate three repaints of the same clickable across the
+        // freshness window.
+        push_at(unit_bounds());
+        push_at(unit_bounds());
+        push_at(unit_bounds());
+        assert_eq!(clickable_registry_len(), 3);
+        let drained = take_clickables();
+        assert_eq!(drained.len(), 1);
+    }
+
+    #[test]
+    fn pushes_separated_by_long_delay_within_window_all_survive() {
+        // Regression: an earlier implementation cleared the registry
+        // whenever consecutive pushes were >5 ms apart, which wiped
+        // legitimate same-frame clickables sitting on either side of a
+        // heavy element. Simulate that by hand-seeding two entries with
+        // a wide gap between them, then pushing a third; all three
+        // distinct rectangles must be returned on drain.
+        clear_clickable_registry();
+        CLICKABLE_REGISTRY.with(|cell| {
+            let mut registry = cell.borrow_mut();
+            registry.push(ClickableEntry {
+                bounds: shifted_bounds(0.0, 0.0),
+                on_click: Arc::new(|_, _| {}),
+                painted_at: Instant::now() - Duration::from_millis(50),
+            });
+            registry.push(ClickableEntry {
+                bounds: shifted_bounds(100.0, 0.0),
+                on_click: Arc::new(|_, _| {}),
+                painted_at: Instant::now() - Duration::from_millis(20),
+            });
+        });
+        push_at(shifted_bounds(200.0, 0.0));
+        let drained = take_clickables();
+        assert_eq!(drained.len(), 3);
     }
 
     #[test]
     fn stale_entries_filtered_on_drain() {
         clear_clickable_registry();
-        // Bypass `push_clickable`'s frame-reset to seed a stale entry
-        // directly. (`push_clickable` would clear if we backdate the
-        // last-push timestamp; we want both stale + fresh in the
-        // registry at the same time to test the drain-side filter.)
         let stale = Instant::now() - ENTRY_FRESHNESS - Duration::from_millis(10);
         CLICKABLE_REGISTRY.with(|cell| {
             cell.borrow_mut().push(ClickableEntry {
-                bounds: unit_bounds(),
+                bounds: shifted_bounds(50.0, 50.0),
                 on_click: Arc::new(|_, _| {}),
                 painted_at: stale,
             });
         });
-        push_now();
+        push_at(unit_bounds());
         let drained = take_clickables();
         assert_eq!(drained.len(), 1);
+    }
+
+    #[test]
+    fn soft_cap_evicts_stale_entries_to_make_room() {
+        clear_clickable_registry();
+        let stale = Instant::now() - ENTRY_FRESHNESS - Duration::from_millis(10);
+        CLICKABLE_REGISTRY.with(|cell| {
+            let mut registry = cell.borrow_mut();
+            for index in 0..SOFT_CAP {
+                registry.push(ClickableEntry {
+                    bounds: shifted_bounds(index as f32, 0.0),
+                    on_click: Arc::new(|_, _| {}),
+                    painted_at: stale,
+                });
+            }
+        });
+        assert_eq!(clickable_registry_len(), SOFT_CAP);
+        push_at(unit_bounds());
+        // The push triggers the soft-cap branch, which evicts every
+        // stale entry before appending the fresh one.
+        assert_eq!(clickable_registry_len(), 1);
     }
 }
