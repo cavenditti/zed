@@ -912,6 +912,16 @@ impl TerminalView {
     fn dispatch_context(&self, cx: &App) -> KeyContext {
         let mut dispatch_context = KeyContext::new_with_defaults();
         dispatch_context.add("Terminal");
+        // Publish the codon pane-mode into the GPUI key context so the
+        // `[bindings.terminal.normal]` / `[bindings.terminal.insert]`
+        // chords (compiled to `Terminal && pane_mode == normal/insert`
+        // in codon-keymap) actually match — without this, `:` in NOR
+        // mode never dispatches `codon_command_palette::Toggle`.
+        match self.pane_mode {
+            PaneMode::Normal => dispatch_context.set("pane_mode", "normal"),
+            PaneMode::Insert => dispatch_context.set("pane_mode", "insert"),
+            PaneMode::Command => dispatch_context.set("pane_mode", "command"),
+        }
 
         if self.terminal.read(cx).vi_mode_enabled() {
             dispatch_context.add("vi_mode");
