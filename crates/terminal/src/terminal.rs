@@ -127,6 +127,14 @@ pub fn insert_zed_terminal_env(
     env.insert("TERM".to_string(), "xterm-256color".to_string());
     env.insert("COLORTERM".to_string(), "truecolor".to_string());
     env.insert("TERM_PROGRAM_VERSION".to_string(), version.to_string());
+    // codon: propagate the fish-shell RPC socket address into every
+    // PTY so the embedded `codon.fish` plugin can find it. Set by
+    // `codon_fish::init` before any terminal spawns; absent
+    // otherwise (e.g. when running upstream zed) — in which case
+    // the plugin no-ops.
+    if let Ok(sock) = std::env::var("CODON_SOCK") {
+        env.insert("CODON_SOCK".to_string(), sock);
+    }
 }
 
 ///Upward flowing events, for changing the title and such
