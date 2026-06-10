@@ -24,10 +24,10 @@ use gpui::{
     ClipboardItem, Context, CursorStyle, DismissEvent, Div, DragMoveEvent, Entity, EventEmitter,
     ExternalPaths, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, KeyContext,
     ListHorizontalSizingBehavior, ListSizingBehavior, Modifiers, ModifiersChangedEvent,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, PromptLevel,
-    Render, ScrollStrategy, Stateful, Styled, Subscription, Task, UniformListScrollHandle,
-    WeakEntity, Window, actions, anchored, deferred, div, hsla, linear_color_stop, linear_gradient,
-    point, px, size, transparent_white, uniform_list,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Point, PromptLevel, Render, ScrollStrategy,
+    Stateful, Styled, Subscription, Task, UniformListScrollHandle, WeakEntity, Window, actions,
+    anchored, deferred, div, hsla, linear_color_stop, linear_gradient, point, px, size,
+    transparent_white, uniform_list,
 };
 use language::DiagnosticSeverity;
 use menu::{Confirm, SelectFirst, SelectLast, SelectNext, SelectPrevious};
@@ -3317,7 +3317,7 @@ impl ProjectPanel {
             return;
         };
         let files_to_download = std::sync::Arc::new(std::sync::Mutex::new(Some(files_to_download)));
-        let workspace_for_modal = workspace.clone();
+        let workspace_for_modal = workspace;
         workspace_entity.update(cx, |workspace_view, cx| {
             workspace_view.toggle_modal(window, cx, move |window, cx| {
                 let workspace_for_callback = workspace_for_modal.clone();
@@ -3346,10 +3346,7 @@ impl ProjectPanel {
                                         workspace.show_toast(
                                             workspace::Toast::new(
                                                 notification_id.clone(),
-                                                format!(
-                                                    "Downloading 0/{} files...",
-                                                    total_files
-                                                ),
+                                                format!("Downloading 0/{} files...", total_files),
                                             ),
                                             cx,
                                         );
@@ -3404,10 +3401,7 @@ impl ProjectPanel {
                                         workspace.show_toast(
                                             workspace::Toast::new(
                                                 notification_id.clone(),
-                                                format!(
-                                                    "Downloaded {} files",
-                                                    total_files
-                                                ),
+                                                format!("Downloaded {} files", total_files),
                                             ),
                                             cx,
                                         );

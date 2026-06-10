@@ -22,8 +22,11 @@ use crate::{
     surrounds::SurroundsType,
 };
 
+// `pub` (not `pub(crate)`) because several `pub` methods
+// (`Motion::range`, `yank_selections_content`, …) name this type in
+// their signatures, which trips `private_interfaces` under `-D warnings`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MotionKind {
+pub enum MotionKind {
     Linewise,
     Exclusive,
     Inclusive,

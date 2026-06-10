@@ -396,15 +396,13 @@ impl Render for LanguageServerPrompt {
                                                     }
                                                 },
                                             ))
-                                            .jump_target(cx.jump_listener(
-                                                move |this, _, cx| {
-                                                    if suppress {
-                                                        cx.emit(SuppressEvent);
-                                                    } else {
-                                                        this.dismiss_notification(cx);
-                                                    }
-                                                },
-                                            )),
+                                            .jump_target(cx.jump_listener(move |this, _, cx| {
+                                                if suppress {
+                                                    cx.emit(SuppressEvent);
+                                                } else {
+                                                    this.dismiss_notification(cx);
+                                                }
+                                            })),
                                     ),
                             ),
                     )
@@ -422,17 +420,14 @@ impl Render for LanguageServerPrompt {
                         let this_handle_jump = this_handle.clone();
                         Button::new(ix, action.title.clone())
                             .size(ButtonSize::Large)
-                            .on_click({
+                            .on_click(move |_, window, cx| {
                                 let this_handle = this_handle.clone();
-                                move |_, window, cx| {
-                                    let this_handle = this_handle.clone();
-                                    window
-                                        .spawn(cx, async move |cx| {
-                                            LanguageServerPrompt::select_option(this_handle, ix, cx)
-                                                .await
-                                        })
-                                        .detach()
-                                }
+                                window
+                                    .spawn(cx, async move |cx| {
+                                        LanguageServerPrompt::select_option(this_handle, ix, cx)
+                                            .await
+                                    })
+                                    .detach()
                             })
                             .jump_target(move |window, cx| {
                                 let this_handle = this_handle_jump.clone();
@@ -558,12 +553,12 @@ impl Render for ErrorMessagePrompt {
                                     )
                                     .child(
                                         ui::IconButton::new("close", ui::IconName::Close)
-                                            .on_click(cx.listener(|_, _, _, cx| {
-                                                cx.emit(DismissEvent)
-                                            }))
-                                            .jump_target(cx.jump_listener(|_, _, cx| {
-                                                cx.emit(DismissEvent)
-                                            })),
+                                            .on_click(
+                                                cx.listener(|_, _, _, cx| cx.emit(DismissEvent)),
+                                            )
+                                            .jump_target(
+                                                cx.jump_listener(|_, _, cx| cx.emit(DismissEvent)),
+                                            ),
                                     ),
                             ),
                     )
