@@ -125,6 +125,11 @@ impl LanguageModelRegistry {
         cx.global::<GlobalLanguageModelRegistry>().0.clone()
     }
 
+    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalLanguageModelRegistry>()
+            .map(|registry| registry.0.clone())
+    }
+
     pub fn read_global(cx: &App) -> &Self {
         cx.global::<GlobalLanguageModelRegistry>().0.read(cx)
     }
