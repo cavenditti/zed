@@ -2661,13 +2661,21 @@ mod tests {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
                     assert_eq!(workspace.worktrees(cx).count(), 2);
                     assert!(workspace.right_dock().read(cx).is_open());
-                    assert!(
-                        workspace
-                            .active_pane()
-                            .read(cx)
-                            .focus_handle(cx)
-                            .is_focused(window)
-                    );
+
+                    // Only directories were opened, so the active pane holds no
+                    // items. Upstream Zed leaves the bare pane handle focused
+                    // here. Codon instead renders the branded welcome page in an
+                    // empty pane even when worktrees are present (see
+                    // `feat(workspace): rebrand welcome page for Codon`), and
+                    // `Pane::focus_in` delegates focus into that interactive
+                    // welcome page — so the focus lands *within* the active pane
+                    // rather than on the pane handle itself. Assert the codon
+                    // invariant: the empty active pane keeps focus inside its own
+                    // subtree (on the welcome page, the only focusable descendant
+                    // of an empty pane).
+                    let active_pane = workspace.active_pane().read(cx);
+                    assert_eq!(active_pane.items_len(), 0);
+                    assert!(active_pane.focus_handle(cx).contains_focused(window, cx));
                 });
             })
             .unwrap();

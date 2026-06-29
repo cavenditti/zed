@@ -4590,6 +4590,14 @@ impl Render for Pane {
                                         }
                                     },
                                 ));
+                            // codon: unlike upstream (which hides the welcome
+                            // page once any worktree exists), keep showing it in
+                            // an empty pane regardless of worktrees so empty
+                            // session windows surface the branded empty state.
+                            // Note this also makes `Pane::focus_in` delegate
+                            // focus into the welcome page when such a pane is
+                            // focused — intended, since the welcome page is
+                            // keyboard-navigable.
                             if !self.should_display_welcome_page {
                                 placeholder
                             } else {
