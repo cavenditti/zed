@@ -31,6 +31,7 @@ pub trait ModalView: ManagedView {
 trait ModalViewHandle {
     fn on_before_dismiss(&mut self, window: &mut Window, cx: &mut App) -> DismissDecision;
     fn view(&self) -> AnyView;
+    fn view_focus_handle(&self, cx: &App) -> FocusHandle;
     fn fade_out_background(&self, cx: &mut App) -> bool;
     fn render_bare(&self, cx: &mut App) -> bool;
 }
@@ -42,6 +43,10 @@ impl<V: ModalView> ModalViewHandle for Entity<V> {
 
     fn view(&self) -> AnyView {
         self.clone().into()
+    }
+
+    fn view_focus_handle(&self, cx: &App) -> FocusHandle {
+        gpui::Focusable::focus_handle(self, cx)
     }
 
     fn fade_out_background(&self, cx: &mut App) -> bool {
@@ -166,8 +171,17 @@ impl ModalLayer {
         }
 
         if let Some(active_modal) = self.active_modal.take() {
+            // The layer's own `focus_handle` is only attached to an element in
+            // the non-bare render path; a `render_bare` modal tracks its view's
+            // own handle instead, so consult both — otherwise dismissing a bare
+            // modal drops window focus entirely instead of restoring it.
+            let modal_contained_focus = active_modal.focus_handle.contains_focused(window, cx)
+                || active_modal
+                    .modal
+                    .view_focus_handle(cx)
+                    .contains_focused(window, cx);
             if let Some(previous_focus) = active_modal.previous_focus_handle
-                && active_modal.focus_handle.contains_focused(window, cx)
+                && modal_contained_focus
             {
                 previous_focus.focus(window, cx);
             }
@@ -233,5 +247,93 @@ impl Render for ModalLayer {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Focusable, TestAppContext};
+
+    struct BareModal(FocusHandle);
+
+    impl EventEmitter<DismissEvent> for BareModal {}
+
+    impl Focusable for BareModal {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.0.clone()
+        }
+    }
+
+    impl ModalView for BareModal {
+        fn render_bare(&self) -> bool {
+            true
+        }
+    }
+
+    impl Render for BareModal {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div().track_focus(&self.0)
+        }
+    }
+
+    struct TestRoot {
+        modal_layer: Entity<ModalLayer>,
+        pane_focus: FocusHandle,
+    }
+
+    impl Render for TestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(div().track_focus(&self.pane_focus))
+                .child(self.modal_layer.clone())
+        }
+    }
+
+    #[gpui::test]
+    async fn test_bare_modal_dismiss_restores_previous_focus(cx: &mut TestAppContext) {
+        let (root, cx) = cx.add_window_view(|_, cx| TestRoot {
+            modal_layer: cx.new(|_| ModalLayer::new()),
+            pane_focus: cx.focus_handle(),
+        });
+
+        let (modal_layer, pane_focus) = root.read_with(cx, |root, _| {
+            (root.modal_layer.clone(), root.pane_focus.clone())
+        });
+
+        cx.update(|window, cx| window.focus(&pane_focus, cx));
+        cx.executor().run_until_parked();
+        cx.update(|window, _| assert!(pane_focus.is_focused(window)));
+
+        modal_layer.update_in(cx, |modal_layer, window, cx| {
+            modal_layer.toggle_modal(window, cx, |_, cx| BareModal(cx.focus_handle()));
+        });
+        cx.executor().run_until_parked();
+
+        let modal = modal_layer
+            .read_with(cx, |modal_layer, _| modal_layer.active_modal::<BareModal>())
+            .expect("bare modal is active");
+        cx.update(|window, cx| {
+            assert!(
+                modal.focus_handle(cx).is_focused(window),
+                "opening a bare modal moves focus onto it"
+            );
+        });
+
+        // Dismiss the way escape does — the modal emits DismissEvent itself.
+        modal.update(cx, |_, cx| cx.emit(DismissEvent));
+        cx.executor().run_until_parked();
+
+        cx.update(|window, cx| {
+            assert!(
+                window.focused(cx).is_some(),
+                "dismissing a bare modal must not leave the window without focus"
+            );
+            assert!(
+                pane_focus.is_focused(window),
+                "dismissing a bare modal restores focus to the previously focused element"
+            );
+        });
     }
 }
